@@ -1,0 +1,37 @@
+appId: com.cobitx.estimating
+productName: CobitX
+copyright: Copyright (c) CobitX Contributors
+directories:
+  output: release
+  buildResources: build
+files:
+  - dist/**/*
+  - dist-electron/**/*
+  - package.json
+extraResources:
+  - from: engine/dist/
+    to: engine/
+    filter:
+      - "**/*"
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+    - target: portable
+      arch:
+        - x64
+nsis:
+  artifactName: CobitX-Setup-${version}-${arch}.${ext}
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: CobitX Estimating
+portable:
+  artifactName: CobitX-Portable-${version}-${arch}.${ext}
+linux:
+  target:
+    - AppImage
+  category: Office

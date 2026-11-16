@@ -1,0 +1,42 @@
+name: Build CobitX Windows .exe
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python engine & PyInstaller
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r engine/requirements.txt pyinstaller
+          pyinstaller --onefile --name cobitx-engine --paths engine --collect-all mcp --hidden-import uvicorn.logging --hidden-import uvicorn.loops.auto --hidden-import uvicorn.protocols.http.auto --hidden-import uvicorn.lifespan.on --distpath engine/dist engine/main.py
+
+      - name: Install Node dependencies & Build Electron .exe
+        run: |
+          npm ci
+          npm run build:electron
+          npx electron-builder --config electron/builder.config.yml --win
+
+      - name: Upload CobitX Windows .exe Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: CobitX-Windows-Installer-and-Portable
+          path: |
+            release/*.exe
+            release/*.blockmap
