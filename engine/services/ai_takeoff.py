@@ -1,4 +1,4 @@
-"""AI Estimating Computer Vision & Document Analysis Engine (OpenCV + PyMuPDF + Shapely) for CobitX."""
+"""AI Estimating Computer Vision & Document Analysis Engine (OpenCV + PDFium + Shapely) for CobitX."""
 
 from __future__ import annotations
 

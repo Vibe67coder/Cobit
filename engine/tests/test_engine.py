@@ -127,8 +127,8 @@ def test_fastapi_endpoints(tmp_path: Path) -> None:
 def test_plan_processor_and_autoselect() -> None:
     import io
     import ezdxf
-    import pymupdf as fitz
     from PIL import Image, ImageDraw
+    from reportlab.pdfgen import canvas as rl_canvas
     from services.plan_processor import auto_select_room_polygon, process_uploaded_plan
 
     # 1. DXF CAD file with two layers and polyline
@@ -144,13 +144,15 @@ def test_plan_processor_and_autoselect() -> None:
     assert len(dxf_res["snapNodes"]) >= 6
     assert {l["name"] for l in dxf_res["layers"]} == {"A-WALL", "A-PART"}
 
-    # 2. Vector PDF generated via PyMuPDF with title block scale text
-    pdf_doc = fitz.open()
-    page = pdf_doc.new_page(width=842, height=595)
+    # 2. Vector PDF generated via ReportLab with title block scale text
+    pdf_buf = io.BytesIO()
+    c = rl_canvas.Canvas(pdf_buf, pagesize=(842, 595))
     for x in range(15):
-        page.draw_line((50, 50 + x * 20), (450, 50 + x * 20))
-    page.insert_text((60, 550), "ARCHITECTURAL PLAN - SCALE 1:100 @ A3")
-    pdf_res = process_uploaded_plan("arch_sheet.pdf", pdf_doc.tobytes(), page_number=1)
+        c.line(50, 50 + x * 20, 450, 50 + x * 20)
+    c.drawString(60, 550, "ARCHITECTURAL PLAN - SCALE 1:100 @ A3")
+    c.showPage()
+    c.save()
+    pdf_res = process_uploaded_plan("arch_sheet.pdf", pdf_buf.getvalue(), page_number=1)
     assert pdf_res["kind"] == "Vector PDF"
     assert "1:100" in pdf_res["scaleLabel"]
     assert pdf_res["imageDataUrl"].startswith("data:image/png;base64,")

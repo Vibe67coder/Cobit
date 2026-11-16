@@ -1,6 +1,6 @@
 appId: com.cobitx.estimating
 productName: CobitX
-copyright: Copyright (c) CobitX Contributors
+copyright: Copyright (c) 2026 David Joia. All rights reserved.
 directories:
   output: release
   buildResources: build

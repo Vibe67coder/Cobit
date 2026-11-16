@@ -121,7 +121,7 @@ export const InsertPlanModal: React.FC<InsertPlanModalProps> = ({
               {file ? `${file.name} (${Math.round(file.size / 1024)} KB)` : 'Choose PDF, DXF CAD, PNG, JPG or TIFF Plan'}
             </div>
             <div style={{ fontSize: 10.5, color: 'var(--text-muted)', marginTop: 4 }}>
-              Extracts vector snap vertices (PyMuPDF / ezdxf), CAD layers &amp; title block scale automatically
+              Extracts vector snap vertices (PDFium / ezdxf), CAD layers &amp; title block scale automatically
             </div>
             <input
               type="file"

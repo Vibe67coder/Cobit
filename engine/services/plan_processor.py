@@ -1,4 +1,4 @@
-"""Blueprint plan processor for PDF, DXF CAD, and Raster images (PyMuPDF + ezdxf + OpenCV + Pillow)."""
+"""Blueprint plan processor for PDF, DXF CAD, and Raster images (PDFium + pypdf + ezdxf + OpenCV + Pillow)."""
 
 from __future__ import annotations
 
@@ -10,8 +10,10 @@ from typing import Any
 
 import cv2
 import ezdxf
-import pymupdf as fitz
 import numpy as np
+import pypdf
+import pypdfium2 as pdfium
+import pypdfium2.raw as pdfium_c
 from PIL import Image
 
 SCALE_REGEX = re.compile(r"\b1\s*:\s*(20|25|50|75|100|125|150|200|250|500|1000)\b")
@@ -56,37 +58,71 @@ def process_uploaded_plan(
     offset_x, offset_y = 40, 30
 
     if ext == ".pdf":
-        doc = fitz.open(stream=raw_bytes, filetype="pdf")
+        doc = pdfium.PdfDocument(raw_bytes)
         total_pages = len(doc)
         idx = max(0, min(total_pages - 1, page_number - 1))
         page = doc[idx]
-        drawings = page.get_drawings()
-        text = page.get_text("text")
-        is_vector = len(drawings) >= 12
+        page_w, page_h = page.get_size()
+        page_w = max(1.0, float(page_w))
+        page_h = max(1.0, float(page_h))
+
+        textpage = page.get_textpage()
+        text = textpage.get_text_range() or ""
+        if not text.strip():
+            try:
+                reader = pypdf.PdfReader(io.BytesIO(raw_bytes))
+                text = reader.pages[idx].extract_text() or ""
+            except Exception:
+                text = ""
         scale_label, scale_ratio = _detect_scale_from_text(text)
 
+        # Extract vector path primitives via PDFium
+        path_objs = list(page.get_objects(filter=[pdfium_c.FPDF_PAGEOBJ_PATH]))
+        is_vector = len(path_objs) >= 12
+
         # Render PDF page at crisp resolution fitting ~1100px width
-        rect = page.rect
-        zoom = min(2.0, 1100.0 / max(1.0, rect.width))
-        pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
-        png_bytes = pix.tobytes("png")
-        img_arr = np.frombuffer(png_bytes, dtype=np.uint8)
-        bgr = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
+        zoom = min(2.0, 1100.0 / page_w)
+        pil_img = page.render(scale=zoom).to_pil().convert("RGB")
+        png_buf = io.BytesIO()
+        pil_img.save(png_buf, format="PNG")
+        png_bytes = png_buf.getvalue()
+        bgr = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
 
         # Extract real vector endpoints scaled to SVG sheet rect (40,30,760,500)
         snap_nodes: list[dict[str, float]] = []
-        sx = canvas_w / max(1.0, rect.width)
-        sy = canvas_h / max(1.0, rect.height)
-        for d in drawings[:300]:
-            for item in d.get("items", []):
-                if item[0] == "l":
-                    p1, p2 = item[1], item[2]
-                    snap_nodes.append({"x": round(offset_x + p1.x * sx, 1), "y": round(offset_y + p1.y * sy, 1)})
-                    snap_nodes.append({"x": round(offset_x + p2.x * sx, 1), "y": round(offset_y + p2.y * sy, 1)})
-                elif item[0] == "re":
-                    r = item[1]
-                    snap_nodes.append({"x": round(offset_x + r.x0 * sx, 1), "y": round(offset_y + r.y0 * sy, 1)})
-                    snap_nodes.append({"x": round(offset_x + r.x1 * sx, 1), "y": round(offset_y + r.y1 * sy, 1)})
+        sx = canvas_w / page_w
+        sy = canvas_h / page_h
+        seen_pts: set[tuple[float, float]] = set()
+        for obj in path_objs[:300]:
+            try:
+                mat = obj.get_matrix()
+                n_segs = pdfium_c.FPDFPath_CountSegments(obj)
+                if n_segs > 0:
+                    for s_idx in range(min(n_segs, 64)):
+                        seg = pdfium_c.FPDFPath_GetPathSegment(obj, s_idx)
+                        px_c, py_c = pdfium_c.c_float(), pdfium_c.c_float()
+                        if pdfium_c.FPDFPathSegment_GetPoint(seg, px_c, py_c):
+                            lx, ly = float(px_c.value), float(py_c.value)
+                            wx = mat.a * lx + mat.c * ly + mat.e
+                            wy = mat.b * lx + mat.d * ly + mat.f
+                            nx = round(offset_x + wx * sx, 1)
+                            ny = round(offset_y + (page_h - wy) * sy, 1)
+                            key = (nx, ny)
+                            if key not in seen_pts:
+                                seen_pts.add(key)
+                                snap_nodes.append({"x": nx, "y": ny})
+                else:
+                    l_b, b_b, r_b, t_b = obj.get_bounds()
+                    for bx, by in ((l_b, b_b), (r_b, t_b)):
+                        nx = round(offset_x + bx * sx, 1)
+                        ny = round(offset_y + (page_h - by) * sy, 1)
+                        key = (nx, ny)
+                        if key not in seen_pts:
+                            seen_pts.add(key)
+                            snap_nodes.append({"x": nx, "y": ny})
+            except Exception:
+                continue
+
         if not snap_nodes and bgr is not None:
             raw_nodes = _extract_image_snap_nodes(bgr, canvas_w, canvas_h)
             snap_nodes = [{"x": round(offset_x + n["x"], 1), "y": round(offset_y + n["y"], 1)} for n in raw_nodes]
@@ -100,8 +136,8 @@ def process_uploaded_plan(
             "scaleLabel": scale_label,
             "scaleRatio": scale_ratio,
             "imageDataUrl": _encode_png_b64(png_bytes),
-            "widthPx": pix.width,
-            "heightPx": pix.height,
+            "widthPx": pil_img.width,
+            "heightPx": pil_img.height,
             "snapNodes": snap_nodes[:350],
             "layers": [
                 {"id": "lay-pdf-base", "name": "PDF-UNDERLAY", "visible": True, "color": "#1e293b"},

@@ -1,0 +1,24 @@
+CobitX — Proprietary Software Licence
+
+PROPRIETARY AND CONFIDENTIAL. Copyright (c) 2026 David Joia. All rights reserved.
+
+All intellectual property, source code, UI/UX designs, 3D asset pipelines, and
+architectural specifications contained within CobitX are the exclusive
+personal property of the creator, David Joia. Built independently as a personal
+project.
+
+Unauthorized copying, modification, distribution, decompilation, or commercial
+use is strictly prohibited without express written authorization from David Joia.
+
+Usage permission is revocable at any time at the sole discretion of David Joia.
+
+Provided 'AS IS' without warranty of any kind.
+
+-------------------------------------------------------------------------------
+Third-party components
+
+CobitX uses third-party open-source libraries, each distributed under its
+own licence (MIT, Apache-2.0, BSD, ISC, PSF-2.0 or MPL-2.0). Those licences apply to the
+respective libraries only and are listed in each package under node_modules/
+and engine/requirements.txt.
+No GPL- or AGPL-licensed code is included in CobitX.
