@@ -243,6 +243,9 @@ export interface IfcElementGeom {
   depthM: number;
   heightM: number;
   rotationRad?: number;
+  vertices?: number[];
+  indices?: number[];
+  footprint?: { x: number; y: number }[];
   areaM2: number;
   lengthM: number;
   volumeM3: number;
@@ -323,6 +326,7 @@ export interface TakeoffShape {
   openings?: ShapeOpening[];
   hidden?: boolean;
   ifcLevel?: string;
+  ifcElementId?: string;
 }
 
 export interface JobRecord {

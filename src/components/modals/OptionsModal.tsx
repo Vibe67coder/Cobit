@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from 'react';
-import { Play, Plus, RefreshCw, Trash2, X } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { Copy, Pencil, Play, Plus, RefreshCw, Trash2, X } from 'lucide-react';
 import type {
   CubitOptionsState,
   ImperialDisplayMode,
@@ -10,6 +10,7 @@ import {
   callMcpTool,
   checkEngineHealth,
   fetchMcpManifest,
+  getBaseUrl,
   probeMcpConnection,
   type EngineHealth,
   type McpManifest,
@@ -36,8 +37,15 @@ export const OptionsModal: React.FC<OptionsModalProps> = ({
   onSave,
   onClose,
 }) => {
+  const [confirmEstimateDeletes, setConfirmEstimateDeletes] = useState(
+    () => localStorage.getItem('cobitx.skipEstimateDeleteConfirmation') !== 'true',
+  );
   const [tab, setTab] = useState<OptionTab>('General');
   const [draft, setDraft] = useState<CubitOptionsState>(options);
+  const [editingMcpId, setEditingMcpId] = useState<string | null>(null);
+  const connectionNameRef = useRef<HTMLInputElement>(null);
+  const [mcpUrl, setMcpUrl] = useState('');
+  const [copyStatus, setCopyStatus] = useState('');
   const [newMcpName, setNewMcpName] = useState('');
   const [newMcpEndpoint, setNewMcpEndpoint] = useState('');
   const [newMcpTransport, setNewMcpTransport] = useState<'http' | 'stdio'>('http');
@@ -58,6 +66,7 @@ export const OptionsModal: React.FC<OptionsModalProps> = ({
       });
     }
     if (tab === 'MCP' && !mcpManifest) {
+      getBaseUrl().then((base) => setMcpUrl(`${base || window.location.origin}/mcp`)).catch(() => setMcpUrl(''));
       fetchMcpManifest().then((m) => {
         if (m) setMcpManifest(m);
       });
@@ -104,23 +113,52 @@ export const OptionsModal: React.FC<OptionsModalProps> = ({
 
   const handleAddMcp = () => {
     if (!newMcpName.trim() || !newMcpEndpoint.trim()) return;
+    const original = draft.mcpConnections.find((server) => server.id === editingMcpId);
+    const endpoint = newMcpEndpoint.trim();
+    if (original && demoEndpoints.get(original.id) === endpoint) {
+      setProbeMessage('Enter the address or command supplied by your provider to replace this demo.');
+      return;
+    }
     const item: McpServerConfig = {
-      id: `mcp-${Date.now()}`,
+      id: original?.id ?? crypto.randomUUID(),
       name: newMcpName.trim(),
       transport: newMcpTransport,
-      endpointOrCommand: newMcpEndpoint.trim(),
+      endpointOrCommand: endpoint,
       category: newMcpCategory,
-      enabled: true,
+      enabled: original && demoEndpoints.get(original.id) !== original.endpointOrCommand ? original.enabled : true,
       status: 'Disconnected',
       toolsCount: 0,
       resourcesCount: 0,
     };
-    setDraft({
-      ...draft,
-      mcpConnections: [...draft.mcpConnections, item],
-    });
+    setProbeResults(({ [item.id]: _oldResult, ...previous }) => previous);
+    setDraft((previous) => ({
+      ...previous,
+      mcpConnections: original
+        ? previous.mcpConnections.map((server) => server.id === original.id ? item : server)
+        : [...previous.mcpConnections, item],
+    }));
+    setEditingMcpId(null);
     setNewMcpName('');
     setNewMcpEndpoint('');
+    setProbeMessage('');
+  };
+
+  const editMcp = (server: McpServerConfig) => {
+    setEditingMcpId(server.id);
+    setNewMcpName(server.name);
+    setNewMcpEndpoint(server.endpointOrCommand);
+    setNewMcpTransport(server.transport);
+    setNewMcpCategory(server.category);
+    connectionNameRef.current?.focus();
+  };
+
+  const copyMcp = async (value: string, description: string) => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopyStatus(`Copied ${description}.`);
+    } catch {
+      setCopyStatus('Select the connection URL and copy it with Ctrl+C.');
+    }
   };
 
   return (
@@ -160,6 +198,10 @@ export const OptionsModal: React.FC<OptionsModalProps> = ({
         <div className="modal-body" style={{ padding: 14 }}>
           {tab === 'General' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+              <label className="form-checkbox-row">
+                <input type="checkbox" checked={confirmEstimateDeletes} onChange={(event) => setConfirmEstimateDeletes(event.target.checked)} />
+                Confirm before deleting estimate rows
+              </label>
               <fieldset style={{ border: '1px solid var(--border-main)', padding: 10 }}>
                 <legend style={{ fontWeight: 600, fontSize: 11, padding: '0 4px' }}>
                   Plans &amp; PDF Import
@@ -486,36 +528,22 @@ export const OptionsModal: React.FC<OptionsModalProps> = ({
                     />
                     Expose CobitX Estimating, Plans, Cost Libraries &amp; BIM QTO via MCP
                   </label>
-                  <span className="form-label">Transport / Port:</span>
-                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                    <select
-                      className="form-select"
-                      style={{ width: 115 }}
-                      value={draft.mcpServerTransport}
-                      onChange={(e) =>
-                        setDraft({
-                          ...draft,
-                          mcpServerTransport: e.target.value as 'stdio' | 'http',
-                        })
-                      }
-                    >
-                      <option value="http">HTTP / SSE</option>
-                      <option value="stdio">stdio</option>
-                    </select>
-                    <input
-                      type="number"
-                      className="form-input mono"
-                      style={{ width: 90 }}
-                      value={draft.mcpServerPort}
-                      onChange={(e) =>
-                        setDraft({ ...draft, mcpServerPort: Number(e.target.value) || 47821 })
-                      }
-                    />
-                    <span className="mono" style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>
-                      http://127.0.0.1:{draft.mcpServerPort}/mcp
-                    </span>
-                  </div>
+                  <span className="form-label">Local MCP URL</span>
+                  <input className="form-input mono" aria-label="Local MCP URL" readOnly value={mcpUrl || 'Local engine unavailable'} />
                 </div>
+                <div className="mcp-add-connection" style={{ marginTop: 8 }}>
+                  <button className="btn-secondary" disabled={!mcpUrl} onClick={() => copyMcp(mcpUrl, 'local MCP URL')}>
+                    <Copy size={12} /> Copy URL
+                  </button>
+                  <button className="btn-secondary" disabled={!mcpUrl} onClick={() => copyMcp(`claude mcp add --transport http cobitx "${mcpUrl}"`, 'Claude Code command')}>
+                    <Copy size={12} /> Copy Claude Code command
+                  </button>
+                  <span role="status">{copyStatus}</span>
+                </div>
+                <p className="mcp-connection-note" style={{ marginTop: 8 }}>
+                  Keep CobitX open when using a local MCP client. ChatGPT on the web connects through a Secure MCP Tunnel
+                  or an approved remote MCP URL. Use the local URL as the tunnel target.
+                </p>
               </fieldset>
 
               <fieldset className="mcp-external-servers" style={{ border: '1px solid var(--border-main)', padding: 10 }}>
@@ -523,8 +551,9 @@ export const OptionsModal: React.FC<OptionsModalProps> = ({
                   External MCP Servers
                 </legend>
                 <p className="mcp-connection-note">
-                  Estimate prices come from saved rates, rate sheets, and imported price lists. External MCP tests check
-                  server access. They do not fetch prices or update estimates.
+                  Use Edit to replace a demo address with one supplied by your provider. Test checks connectivity.
+                  Estimate prices come from saved rates, rate sheets and imported price lists. Live pricing requires
+                  each provider’s rate tool and a mapping to CobitX item codes, units and currency.
                 </p>
                 <div className="mcp-connections-table">
                 <table className="cubit-table">
@@ -537,7 +566,7 @@ export const OptionsModal: React.FC<OptionsModalProps> = ({
                       <th>Endpoint / Command</th>
                       <th className="num">Tools</th>
                       <th>Status</th>
-                      <th style={{ width: 64 }}>Actions</th>
+                      <th style={{ width: 92 }}>Actions</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -575,6 +604,10 @@ export const OptionsModal: React.FC<OptionsModalProps> = ({
                           <td><span className={`status-badge ${status === 'Verified' ? 'status-won' : 'status-open'}`}>{status}</span></td>
                           <td>
                             <div className="mcp-connection-actions">
+                              <button className="pane-icon-btn" title="Edit MCP connection" aria-label={`Edit ${m.name}`}
+                                disabled={testingId === m.id} onClick={() => editMcp(m)}>
+                                <Pencil size={12} />
+                              </button>
                               <button className="pane-icon-btn" title="Test MCP Server Connection" aria-label={`Test ${m.name}`}
                                 disabled={sample || !m.enabled || testingId !== null} onClick={() => handleTestMcpServer(m)}>
                                 <RefreshCw size={12} color="var(--brand-blue)" />
@@ -620,6 +653,7 @@ export const OptionsModal: React.FC<OptionsModalProps> = ({
                   <input
                     className="form-input"
                     placeholder="Connection name"
+                    ref={connectionNameRef}
                     aria-label="Connection name"
                     value={newMcpName}
                     onChange={(e) => setNewMcpName(e.target.value)}
@@ -655,8 +689,13 @@ export const OptionsModal: React.FC<OptionsModalProps> = ({
                     onChange={(e) => setNewMcpEndpoint(e.target.value)}
                   />
                   <button className="btn-secondary" disabled={!newMcpName.trim() || !newMcpEndpoint.trim()}>
-                    <Plus size={12} /> Add
+                    <Plus size={12} /> {editingMcpId ? 'Save connection' : 'Add'}
                   </button>
+                  {editingMcpId && <button type="button" className="btn-secondary" onClick={() => {
+                    setEditingMcpId(null);
+                    setNewMcpName('');
+                    setNewMcpEndpoint('');
+                  }}>Cancel edit</button>}
                 </form>
               </fieldset>
 
@@ -743,6 +782,8 @@ export const OptionsModal: React.FC<OptionsModalProps> = ({
           <button
             className="btn-primary"
             onClick={() => {
+              if (confirmEstimateDeletes) localStorage.removeItem('cobitx.skipEstimateDeleteConfirmation');
+              else localStorage.setItem('cobitx.skipEstimateDeleteConfirmation', 'true');
               onSave(draft);
               onClose();
             }}

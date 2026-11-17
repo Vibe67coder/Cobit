@@ -29,6 +29,7 @@ export interface EngineHealth {
   sqlitePath: string;
   duckdbPath: string;
   mcpReady: boolean;
+  drawingImportApi?: number;
 }
 
 export interface BoqAnalyticsResult {
@@ -68,21 +69,16 @@ export interface OpeningPreset {
   deductArea: boolean;
 }
 
-let cachedBaseUrl: string | null = null;
-
-async function getBaseUrl(): Promise<string> {
-  if (cachedBaseUrl !== null) return cachedBaseUrl;
+export async function getBaseUrl(): Promise<string> {
   if (typeof window !== 'undefined' && window.cobitxDesktop?.getEnv) {
     try {
       const env = await window.cobitxDesktop.getEnv();
-      cachedBaseUrl = env.engineUrl;
-      return cachedBaseUrl;
+      return env.engineUrl;
     } catch {
-      // Fall through to relative path
+      throw new Error('The local CobitX engine is unavailable. Restart the app and try again.');
     }
   }
-  cachedBaseUrl = '';
-  return cachedBaseUrl;
+  return '';
 }
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
@@ -214,6 +210,9 @@ async function postPlanFile<T>(endpoint: string, data: FormData): Promise<T> {
   const res = await fetch(`${base}/api/plans/${endpoint}`, { method: 'POST', body: data });
   if (!res.ok) {
     const body = await res.json().catch(() => null);
+    if (res.status === 404) {
+      throw new Error('This build is connected to an older CobitX engine. Close older CobitX windows, then reopen the updated build.');
+    }
     throw new Error(typeof body?.detail === 'string' ? body.detail : `Drawing request failed (${res.status}).`);
   }
   return res.json() as Promise<T>;

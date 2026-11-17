@@ -43,6 +43,7 @@ import { ReportPreviewModal, type ReportTabKind } from '../modals/ReportPreviewM
 import { AiTakeoffModal, type AiModeTab } from '../modals/AiTakeoffModal';
 import { OptionsVariationsModal } from '../modals/OptionsVariationsModal';
 import { autoSelectPolygon, type AiZoneResult } from '../../services/engineClient';
+import { defaultResultUnit, isPolygonResult } from '../../utils/measurement';
 
 interface JobWorkspaceProps {
   job: JobRecord;
@@ -99,7 +100,7 @@ export const JobWorkspace: React.FC<JobWorkspaceProps> = ({
 
   const freezeLockReason = (scope: string) =>
     isReadOnly
-      ? 'Job is in Read-Only mode. Switch off Read-Only in Configuration to edit.'
+      ? 'Job is in Read-Only mode. Select Enable Editing to resume.'
       : isStatusLocked
       ? `Job status is "${job.status}" (locked against ${scope}).`
       : `${scope} frozen by Job Freeze States (${freezeStates.filter((f) => f !== 'None').join(', ')}).`;
@@ -140,6 +141,8 @@ export const JobWorkspace: React.FC<JobWorkspaceProps> = ({
   const [selectedRowId, setSelectedRowId] = useState<string | null>(
     job.rows.find((r) => r.rowType === 'Item')?.id ?? job.rows[0]?.id ?? null
   );
+  const [deleteRows, setDeleteRows] = useState<string[]>([]);
+  const [skipDeleteConfirmation, setSkipDeleteConfirmation] = useState(false);
   const [selectedCalcRowId, setSelectedCalcRowId] = useState<string | null>(null);
   const [lowerTab, setLowerTab] = useState<'Calc' | 'Rate'>(isPriceList ? 'Rate' : 'Calc');
 
@@ -148,6 +151,9 @@ export const JobWorkspace: React.FC<JobWorkspaceProps> = ({
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 30, y: 20 });
   const [draftPoints, setDraftPoints] = useState<{ x: number; y: number }[]>([]);
+  const activePlan = job.plans.find((plan) => plan.id === activePlanId);
+  const canEditPlan = viewMode === '2D' && !!activePlan && activePlan.kind !== 'IFC' && !isQuantitiesFrozen;
+  const canEditPdf = canEditPlan && activePlan.kind.endsWith('PDF');
 
   const [newShapeParams, setNewShapeParams] = useState({
     description: 'New Measurement Shape',
@@ -181,8 +187,47 @@ export const JobWorkspace: React.FC<JobWorkspaceProps> = ({
 
   const selectedItem =
     job.rows.find((r) => r.id === selectedRowId) ??
-    job.rows.find((r) => r.rowType === 'Item') ??
     null;
+
+  const selectEstimateRow = (id: string) => {
+    if (id !== selectedRowId) setDraftPoints([]);
+    setSelectedRowId(id);
+  };
+
+  const selectTool = (tool: DrawingTool) => {
+    if (tool !== 'Select' && (!canEditPlan || (tool !== 'Ruler' && selectedItem?.rowType !== 'Item'))) {
+      onNotify('Open a 2D drawing and select an estimate item to start takeoff.');
+      return;
+    }
+    if (tool !== activeTool) {
+      setDraftPoints([]);
+      setCalibratingScale(false);
+      setAligningRevision(false);
+    }
+    setActiveTool(tool);
+  };
+
+  const selectPlan = (id: string) => {
+    if (id === activePlanId) return;
+    setActivePlanId(id);
+    setViewMode(job.plans.find((plan) => plan.id === id)?.kind === 'IFC' ? '3D' : '2D');
+    setActiveTool('Select');
+    setDraftPoints([]);
+    setCalibratingScale(false);
+    setAligningRevision(false);
+    setSelectedShapeId(null);
+    setZoom(1);
+    setPan({ x: 30, y: 20 });
+  };
+
+  const changeViewMode = (mode: '2D' | '3D') => {
+    if (mode === viewMode) return;
+    setViewMode(mode);
+    setActiveTool('Select');
+    setDraftPoints([]);
+    setCalibratingScale(false);
+    setAligningRevision(false);
+  };
 
   const summary = useMemo(() => computeJobSummary(job), [job]);
 
@@ -336,6 +381,59 @@ export const JobWorkspace: React.FC<JobWorkspaceProps> = ({
     onNotify(`Cut "${target.description}" to clipboard.`);
   };
 
+  const removableRows = (ids: string[]) => {
+    const byParent = new Map<string, EstimateRow[]>();
+    for (const row of job.rows) {
+      if (!row.parentId) continue;
+      const children = byParent.get(row.parentId) ?? [];
+      children.push(row);
+      byParent.set(row.parentId, children);
+    }
+    const targets = new Set(ids);
+    for (const id of targets) {
+      for (const child of byParent.get(id) ?? []) targets.add(child.id);
+    }
+    return job.rows.filter((row) => targets.has(row.id));
+  };
+
+  const applyDeleteRows = (rows: EstimateRow[]) => {
+    if (!rows.length) return;
+    if (isJobFrozen || rows.some((row) => row.lockedBy ||
+      (row.rowType === 'Item' && ((isQuantitiesFrozen && (row.quantity || row.calcRows.length)) ||
+      (isRatesFrozen && (row.rate || row.rateRows.length)))))) {
+      onNotify('Unlock the selected rows or job before deleting them.');
+      return;
+    }
+    const ids = new Set(rows.map((row) => row.id));
+    const nextRows = job.rows.filter((row) => !ids.has(row.id));
+    onUpdateJob(job.id, {
+      rows: nextRows,
+      shapes: job.shapes.filter((shape) => !ids.has(shape.itemId)),
+      externalRefs: job.externalRefs?.filter((ref) => !ids.has(ref.targetItemId)),
+    });
+    setSelectedRowId(nextRows[Math.min(job.rows.findIndex((row) => ids.has(row.id)), nextRows.length - 1)]?.id ?? null);
+    setSelectedCalcRowId(null);
+    setSelectedShapeId(null);
+    setDraftPoints([]);
+    onNotify(`Deleted ${rows.length} estimate ${rows.length === 1 ? 'row' : 'rows'}.`);
+  };
+
+  const requestDeleteRows = (ids: string[]) => {
+    if (!ids.length || isJobFrozen) return;
+    if (localStorage.getItem('cobitx.skipEstimateDeleteConfirmation') === 'true') {
+      applyDeleteRows(removableRows(ids));
+    } else {
+      setSkipDeleteConfirmation(false);
+      setDeleteRows(ids);
+    }
+  };
+
+  const confirmDeleteRows = () => {
+    applyDeleteRows(removableRows(deleteRows));
+    if (skipDeleteConfirmation) localStorage.setItem('cobitx.skipEstimateDeleteConfirmation', 'true');
+    setDeleteRows([]);
+  };
+
   const handlePasteRow = () => {
     if (isNewItemsFrozen) {
       onNotify(freezeLockReason('Pasting rows'));
@@ -431,6 +529,10 @@ export const JobWorkspace: React.FC<JobWorkspaceProps> = ({
     if (nextRo && (ribbonTab === 'Plans' || ribbonTab === 'Configuration')) {
       setRibbonTab('Home');
     }
+    setActiveTool('Select');
+    setDraftPoints([]);
+    setCalibratingScale(false);
+    setAligningRevision(false);
     onUpdateJob(job.id, { isReadOnly: nextRo });
     onNotify(nextRo ? 'Switched to Read-Only Mode (plans & editing locked).' : 'Exited Read-Only Mode.');
   };
@@ -625,12 +727,12 @@ export const JobWorkspace: React.FC<JobWorkspaceProps> = ({
     }
     if (points.length === 0 || !activePlanId) return;
     const targetItem = selectedItem ?? job.rows.find((r) => r.rowType === 'Item');
-    if (!targetItem) return;
+    if (targetItem?.rowType !== 'Item' || targetItem.lockedBy) return;
     const rt = targetItem.resultType ?? 'Area';
     const plan = job.plans.find((p) => p.id === activePlanId) ?? job.plans[0];
     const scaleRatio = plan?.scaleRatio ?? 28;
     const shouldClose =
-      closed || (rt === 'Area' || rt === 'Volume' ? points.length >= 3 : false);
+      !rt.includes('Count') && (closed || isPolygonResult(rt));
 
     const shapeId = `shp-${Date.now()}`;
     const newShape: TakeoffShape = {
@@ -687,18 +789,21 @@ export const JobWorkspace: React.FC<JobWorkspaceProps> = ({
     onNotify(`Added "${newShape.name}" (${calcRow.quantity}) to ${targetItem.description}.`);
   };
 
-  const finishDraftShape = (closed = false) => {
+  const finishDraftShape = (closed = false, points = draftPoints) => {
     if (isQuantitiesFrozen) {
       setDraftPoints([]);
       onNotify(freezeLockReason('Takeoff shapes'));
       return;
     }
-    if (draftPoints.length === 0 || !activePlanId) return;
-    if (!(selectedItem ?? job.rows.find((r) => r.rowType === 'Item'))) {
-      setDraftPoints([]);
+    if (!canEditPlan || activeTool === 'Select' || selectedItem?.rowType !== 'Item' || !points.length) return;
+    const result = selectedItem.resultType ?? 'Area';
+    const closes = closed || isPolygonResult(result);
+    const minimum = result.includes('Count') ? 1 : closes ? 3 : 2;
+    if (new Set(points.map(({ x, y }) => `${x},${y}`)).size < minimum) {
+      onNotify(`Place at least ${minimum} distinct points to finish this measurement.`);
       return;
     }
-    createTakeoffShapeForPoints(draftPoints, closed);
+    createTakeoffShapeForPoints(points, closes);
     setDraftPoints([]);
   };
 
@@ -710,6 +815,9 @@ export const JobWorkspace: React.FC<JobWorkspaceProps> = ({
     if (!plans.length) return;
     onUpdateJob(job.id, { plans: [...job.plans, ...plans] });
     setActivePlanId(plans[0].id);
+    setViewMode('2D');
+    setActiveTool('Select');
+    setAligningRevision(false);
     setDraftPoints([]);
     setSelectedShapeId(null);
     setZoom(1);
@@ -1020,17 +1128,25 @@ export const JobWorkspace: React.FC<JobWorkspaceProps> = ({
   // Cubit Keyboard Shortcuts inside Job Workspace
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.defaultPrevented || showInsertPlanModal) return;
+      if (e.defaultPrevented || document.querySelector('.modal-backdrop')) return;
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
 
-      if (e.ctrlKey && e.key === '1') { e.preventDefault(); setActiveTool('Select'); }
-      else if (e.ctrlKey && e.key === '2') { e.preventDefault(); setActiveTool('Polyline'); }
-      else if (e.ctrlKey && e.key === '3') { e.preventDefault(); setActiveTool('Auto Select'); }
-      else if (e.ctrlKey && e.key === '4') { e.preventDefault(); setActiveTool('Rectangle'); }
-      else if (e.ctrlKey && e.key === '5') { e.preventDefault(); setActiveTool('Line'); }
-      else if (e.ctrlKey && e.key === '6') { e.preventDefault(); setActiveTool('Count'); }
-      else if (e.ctrlKey && e.key === '7') { e.preventDefault(); setActiveTool('Ruler'); }
+      if (e.key === 'Escape' && (draftPoints.length || calibratingScale || aligningRevision)) {
+        e.preventDefault();
+        setDraftPoints([]);
+        setCalibratingScale(false);
+        setAligningRevision(false);
+      } else if ((e.key === 'Enter' || e.key.toLowerCase() === 'j') && draftPoints.length && activeTool !== 'Select' && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        e.preventDefault();
+        finishDraftShape(e.key.toLowerCase() === 'j');
+      } else if (e.ctrlKey && e.key === '1') { e.preventDefault(); selectTool('Select'); }
+      else if (e.ctrlKey && e.key === '2') { e.preventDefault(); selectTool('Polyline'); }
+      else if (e.ctrlKey && e.key === '3') { e.preventDefault(); selectTool('Auto Select'); }
+      else if (e.ctrlKey && e.key === '4') { e.preventDefault(); selectTool('Rectangle'); }
+      else if (e.ctrlKey && e.key === '5') { e.preventDefault(); selectTool('Line'); }
+      else if (e.ctrlKey && e.key === '6') { e.preventDefault(); selectTool('Count'); }
+      else if (e.ctrlKey && e.key === '7') { e.preventDefault(); selectTool('Ruler'); }
       else if (e.key === 'F7') { e.preventDefault(); setPhantomEnabled((v) => !v); }
       else if (e.key === 'F8') { e.preventDefault(); setOrthoEnabled((v) => !v); }
       else if (e.key === 'F9') {
@@ -1057,9 +1173,6 @@ export const JobWorkspace: React.FC<JobWorkspaceProps> = ({
             );
           }
         }
-      } else if ((e.key === 'j' || e.key === 'J') && draftPoints.length >= 3) {
-        e.preventDefault();
-        finishDraftShape(true);
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'x') {
         e.preventDefault();
         handleCutRow();
@@ -1137,13 +1250,13 @@ export const JobWorkspace: React.FC<JobWorkspaceProps> = ({
         onToggleRibbon={onToggleRibbon}
         showKeytips={showKeytips}
         activeTool={activeTool}
-        onSelectTool={setActiveTool}
+        onSelectTool={selectTool}
         orthoEnabled={orthoEnabled}
         onToggleOrtho={() => setOrthoEnabled((v) => !v)}
         phantomEnabled={phantomEnabled}
         onTogglePhantom={() => setPhantomEnabled((v) => !v)}
         viewMode={viewMode}
-        onSetViewMode={setViewMode}
+        onSetViewMode={changeViewMode}
         isolateSelected={isolateSelected}
         onToggleIsolate={() => setIsolateSelected((v) => !v)}
         hidePickedRates={hidePickedRates}
@@ -1157,6 +1270,12 @@ export const JobWorkspace: React.FC<JobWorkspaceProps> = ({
         takeoffDisplay={takeoffDisplay}
         onChangeTakeoffDisplay={setTakeoffDisplay}
         isReadOnly={isJobFrozen}
+        canResumeEditing={isReadOnly}
+        canEditPlan={canEditPlan}
+        canEditPdf={canEditPdf}
+        hasBimPlan={activePlan?.kind === 'IFC'}
+        canShow3D={activePlan?.kind === 'IFC' || job.shapes.some((shape) => shape.planId === activePlanId && !shape.hidden)}
+        hasDraft={draftPoints.length > 0}
         onToggleReadOnly={handleToggleReadOnly}
         onToggleLockTrade={handleToggleLockTrade}
         onOpenConstants={() => setShowConstantsModal(true)}
@@ -1180,7 +1299,8 @@ export const JobWorkspace: React.FC<JobWorkspaceProps> = ({
         onOpenInsertPlan={() => setShowInsertPlanModal(true)}
         onOpenImportIfc={() => setShowIfcModal(true)}
         onStartScaleCalibration={() => {
-          setViewMode('2D');
+          setActiveTool('Select');
+          setDraftPoints([]);
           setCalibratingScale(true);
           onNotify('2-Point Scale Calibration active: click Point A then Point B in Viewport.');
         }}
@@ -1188,7 +1308,8 @@ export const JobWorkspace: React.FC<JobWorkspaceProps> = ({
         onSaveSnapshot={handleSaveSnapshot}
         onOpenRevisionModal={() => setShowRevisionModal(true)}
         onStartRevisionAlign={() => {
-          setViewMode('2D');
+          setActiveTool('Select');
+          setDraftPoints([]);
           setAligningRevision(true);
           onNotify('2-Point Align active: click Base Plan Anchor then Matching Revision Anchor.');
         }}
@@ -1225,13 +1346,22 @@ export const JobWorkspace: React.FC<JobWorkspaceProps> = ({
               selectedCalcRowId={selectedCalcRowId}
               lowerTab={lowerTab}
               onChangeLowerTab={setLowerTab}
-              onSelectRow={setSelectedRowId}
+              onSelectRow={selectEstimateRow}
               onSelectCalcRow={(cid) => {
                 setSelectedCalcRowId(cid);
                 const found = selectedItem?.calcRows.find((c) => c.id === cid);
                 if (found?.shapeId) setSelectedShapeId(found.shapeId);
               }}
               onUpdateRow={updateRow}
+              onChangeResultType={(row, resultType) => {
+                if (row.calcRows.length) {
+                  onNotify('Change the result type on an item before adding measurements.');
+                  return;
+                }
+                setDraftPoints([]);
+                updateRow(row.id, { resultType, unit: defaultResultUnit(resultType, options.defaultCountUnit) });
+              }}
+              onDeleteRows={requestDeleteRows}
               onToggleCollapse={(id) => {
                 const row = job.rows.find((r) => r.id === id);
                 if (row) {
@@ -1298,9 +1428,10 @@ export const JobWorkspace: React.FC<JobWorkspaceProps> = ({
               </span>
             </div>
             <ViewportPane
+              key={activePlanId}
               plans={job.plans}
               activePlanId={activePlanId}
-              onSelectPlan={setActivePlanId}
+              onSelectPlan={selectPlan}
               shapes={job.shapes}
               selectedShapeId={selectedShapeId}
               onSelectShape={(sid) => {
@@ -1308,9 +1439,9 @@ export const JobWorkspace: React.FC<JobWorkspaceProps> = ({
                 const shp = job.shapes.find((s) => s.id === sid);
                 if (shp) setSelectedRowId(shp.itemId);
               }}
-              activeTool={isQuantitiesFrozen ? 'Select' : activeTool}
+              activeTool={canEditPlan && (selectedItem?.rowType === 'Item' || activeTool === 'Ruler') ? activeTool : 'Select'}
               viewMode={viewMode}
-              onSetViewMode={setViewMode}
+              onSetViewMode={changeViewMode}
               isolateSelected={isolateSelected}
               snappingEnabled={options.snappingEnabled}
               snapColor={options.snapColor}
@@ -1359,7 +1490,7 @@ export const JobWorkspace: React.FC<JobWorkspaceProps> = ({
             paneVisibility={paneVisibility}
             plans={job.plans}
             activePlanId={activePlanId}
-            onSelectPlan={setActivePlanId}
+            onSelectPlan={selectPlan}
             onTogglePlanVisibility={(pid) =>
               onUpdateJob(
                 job.id,
@@ -1657,6 +1788,33 @@ export const JobWorkspace: React.FC<JobWorkspaceProps> = ({
           }}
           onClose={() => setShowTaxModal(false)}
         />
+      )}
+
+      {deleteRows.length > 0 && (
+        <div className="modal-backdrop" onClick={() => setDeleteRows([])}>
+          <div className="modal-window" role="alertdialog" aria-modal="true" aria-labelledby="estimate-delete-title"
+            style={{ width: 420 }} onClick={(event) => event.stopPropagation()}
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') setDeleteRows([]);
+              if (event.key === 'Enter' && (event.target as HTMLElement).tagName !== 'BUTTON') {
+                event.preventDefault();
+                confirmDeleteRows();
+              }
+            }}>
+            <div className="modal-header" id="estimate-delete-title">Delete estimate rows?</div>
+            <div className="modal-body">
+              <p>This will delete {removableRows(deleteRows).length} estimate rows, including any headings, items and takeoff linked to them.</p>
+              <label className="form-checkbox-row">
+                <input type="checkbox" checked={skipDeleteConfirmation} onChange={(event) => setSkipDeleteConfirmation(event.target.checked)} />
+                Don’t show again
+              </label>
+            </div>
+            <div className="modal-footer">
+              <button className="btn-secondary" onClick={() => setDeleteRows([])}>Cancel</button>
+              <button className="btn-primary" autoFocus onClick={confirmDeleteRows}>Delete</button>
+            </div>
+          </div>
+        </div>
       )}
 
       {showInsertPlanModal && (

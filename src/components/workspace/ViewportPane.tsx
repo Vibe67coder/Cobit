@@ -19,7 +19,7 @@ import type {
 } from '../../types/cubit';
 import { computeShapeMetrics, formatDimension, formatNumber } from '../../utils/estimateCalc';
 import type { OptimisePdfState, TakeoffDisplayState } from './JobRibbon';
-import { ThreeViewport } from './ThreeViewport';
+import { ThreeViewport, type ThreeViewportHandle } from './ThreeViewport';
 
 interface ViewportPaneProps {
   plans: PlanDocument[];
@@ -44,7 +44,7 @@ interface ViewportPaneProps {
   onChangePan: (p: { x: number; y: number }) => void;
   draftPoints: { x: number; y: number }[];
   onAddDraftPoint: (pt: { x: number; y: number }) => void;
-  onFinishDraftShape: (closed?: boolean) => void;
+  onFinishDraftShape: (closed?: boolean, points?: { x: number; y: number }[]) => void;
   calibratingScale: boolean;
   onCompleteScaleCalibration: (pixelDistance: number, realMeters: number) => void;
   onCancelScaleCalibration: () => void;
@@ -118,6 +118,7 @@ export const ViewportPane: React.FC<ViewportPaneProps> = ({
   onNotify,
 }) => {
   const [navTool, setNavTool] = useState<'none' | 'Pan' | 'ZoomWindow' | 'Rotate'>('none');
+  const [previousTool, setPreviousTool] = useState(activeTool);
   const [cursorWorld, setCursorWorld] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [snappedPt, setSnappedPt] = useState<{ x: number; y: number } | null>(null);
   const [rectStart, setRectStart] = useState<{ x: number; y: number } | null>(null);
@@ -130,6 +131,15 @@ export const ViewportPane: React.FC<ViewportPaneProps> = ({
   const [alignPoints, setAlignPoints] = useState<{ x: number; y: number }[]>([]);
   const [knownMetersInput, setKnownMetersInput] = useState('10');
 
+  if (previousTool !== activeTool) {
+    setPreviousTool(activeTool);
+    setRectStart(null);
+    setRulerPoints([]);
+    setZoomWindowDrag(null);
+    setNavTool('none');
+  }
+
+  const modelViewportRef = useRef<ThreeViewportHandle>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const draggingRef = useRef<{ startX: number; startY: number; origPan: { x: number; y: number } } | null>(null);
 
@@ -137,11 +147,13 @@ export const ViewportPane: React.FC<ViewportPaneProps> = ({
 
   const planShapes = useMemo(() => {
     const list = shapes.filter((s) => s.planId === activePlan?.id && !s.hidden);
-    if (isolateSelected && selectedShapeId) {
+    if (activePlan?.kind !== 'IFC' && isolateSelected && selectedShapeId) {
       return list.filter((s) => s.id === selectedShapeId);
     }
     return list;
   }, [shapes, activePlan, isolateSelected, selectedShapeId]);
+
+  const canShow3D = activePlan?.kind === 'IFC' || planShapes.length > 0;
 
   const isLayerVisible = (layerName: string) => {
     if (!activePlan) return true;
@@ -238,8 +250,8 @@ export const ViewportPane: React.FC<ViewportPaneProps> = ({
     }
 
     if (e.button === 2) {
-      if (draftPoints.length >= 2) {
-        onFinishDraftShape(false);
+      if (activeTool !== 'Select' && !calibratingScale && !aligningRevision && draftPoints.length) {
+        onFinishDraftShape();
       }
       setRectStart(null);
       setRulerPoints([]);
@@ -285,11 +297,7 @@ export const ViewportPane: React.FC<ViewportPaneProps> = ({
       if (!rectStart) {
         setRectStart(pt);
       } else {
-        onAddDraftPoint(rectStart);
-        onAddDraftPoint({ x: pt.x, y: rectStart.y });
-        onAddDraftPoint(pt);
-        onAddDraftPoint({ x: rectStart.x, y: pt.y });
-        setTimeout(() => onFinishDraftShape(true), 0);
+        onFinishDraftShape(true, [rectStart, { x: pt.x, y: rectStart.y }, pt, { x: rectStart.x, y: pt.y }]);
         setRectStart(null);
       }
       return;
@@ -300,14 +308,15 @@ export const ViewportPane: React.FC<ViewportPaneProps> = ({
       if (
         activeTool === 'Polyline' &&
         draftPoints.length >= 3 &&
-        Math.hypot(pt.x - draftPoints[0].x, pt.y - draftPoints[0].y) < 12 / zoom
+        Math.hypot(raw.x - draftPoints[0].x, raw.y - draftPoints[0].y) <= 16 / zoom
       ) {
         onFinishDraftShape(true);
         return;
       }
-      onAddDraftPoint(pt);
       if (activeTool === 'Line' && draftPoints.length === 1) {
-        setTimeout(() => onFinishDraftShape(false), 0);
+        onFinishDraftShape(false, [...draftPoints, pt]);
+      } else {
+        onAddDraftPoint(pt);
       }
     }
   };
@@ -392,7 +401,7 @@ export const ViewportPane: React.FC<ViewportPaneProps> = ({
         <div className="viewport-floating-toolbar">
           <button
             className="vp-tool-btn"
-            onClick={handleZoomSelected}
+            onClick={() => viewMode === '3D' ? modelViewportRef.current?.fit(selectedShapeId) : handleZoomSelected()}
             title="Zoom Selected"
           >
             <Crosshair size={13} color="var(--brand-blue)" /> Zoom Selected
@@ -403,6 +412,7 @@ export const ViewportPane: React.FC<ViewportPaneProps> = ({
               setNavTool(navTool === 'ZoomWindow' ? 'none' : 'ZoomWindow');
               onNotify('Zoom Window active.');
             }}
+            disabled={viewMode === '3D'}
             title="Zoom Window"
           >
             <Search size={13} /> Window
@@ -421,18 +431,20 @@ export const ViewportPane: React.FC<ViewportPaneProps> = ({
           <button
             className={`vp-tool-btn ${navTool === 'Pan' ? 'active' : ''}`}
             onClick={() => setNavTool(navTool === 'Pan' ? 'none' : 'Pan')}
-            title="Pan (or hold Middle Mouse Button)"
+            disabled={viewMode === '3D'}
+            title={viewMode === '3D' ? 'Right-drag to pan in 3D' : 'Pan (or hold Middle Mouse Button)'}
           >
             <Hand size={13} /> Pan
           </button>
           <button
             className={`vp-tool-btn ${viewMode === '3D' ? 'active' : ''}`}
-            onClick={() => onSetViewMode(viewMode === '3D' ? '2D' : '3D')}
+            disabled={!canShow3D || viewMode === '3D'}
+            onClick={() => onSetViewMode('3D')}
             title="Rotate / Toggle 3D Visual Estimating"
           >
             <Rotate3d size={13} color={viewMode === '3D' ? '#fff' : '#0d9488'} /> Rotate
           </button>
-          <button className="vp-tool-btn" onClick={handleZoomFit} title="Zoom Fit">
+          <button className="vp-tool-btn" onClick={() => viewMode === '3D' ? modelViewportRef.current?.fit() : handleZoomFit()} title="Zoom Fit">
             <Maximize2 size={13} /> Fit
           </button>
 
@@ -446,6 +458,7 @@ export const ViewportPane: React.FC<ViewportPaneProps> = ({
           </button>
           <button
             className={`vp-tool-btn ${viewMode === '3D' ? 'active' : ''}`}
+            disabled={!canShow3D}
             onClick={() => onSetViewMode('3D')}
           >
             <Box size={12} /> 3D
@@ -595,8 +608,9 @@ export const ViewportPane: React.FC<ViewportPaneProps> = ({
         {/* 2D Vector CAD / PDF Canvas OR Real Three.js 3D Visual Estimating Viewport */}
         {viewMode === '3D' ? (
           <ThreeViewport
+            ref={modelViewportRef}
             activePlan={activePlan ?? undefined}
-            shapes={planShapes}
+            shapes={activePlan?.kind === 'IFC' ? shapes.filter((shape) => shape.planId === activePlan.id) : planShapes}
             selectedShapeId={selectedShapeId}
             isolateSelected={isolateSelected}
             onSelectShape={onSelectShape}
@@ -619,7 +633,15 @@ export const ViewportPane: React.FC<ViewportPaneProps> = ({
             background: '#ffffff',
           }}
           onMouseMove={handleMouseMove}
-          onMouseDown={handleMouseDown}
+          tabIndex={0}
+          aria-label="2D drawing viewport"
+          onKeyDown={(event) => {
+            if (event.key === 'Escape') { setRectStart(null); setRulerPoints([]); setZoomWindowDrag(null); }
+          }}
+          onMouseDown={(event) => {
+            event.currentTarget.focus({ preventScroll: true });
+            handleMouseDown(event);
+          }}
           onMouseUp={handleMouseUp}
           onContextMenu={(e) => e.preventDefault()}
         >
@@ -675,7 +697,6 @@ export const ViewportPane: React.FC<ViewportPaneProps> = ({
                     filter: optimisePdf.singleColour
                       ? 'grayscale(1) contrast(1.2)'
                       : undefined,
-                    opacity: optimisePdf.flattenPdf ? 0.92 : 1,
                   }}
                 >
                   {activePlan.imageDataUrl ? (
@@ -764,7 +785,6 @@ export const ViewportPane: React.FC<ViewportPaneProps> = ({
                           fontWeight={600}
                           textAnchor="middle"
                           style={{
-                            fontFamily: optimisePdf.rasteriseText ? 'monospace' : undefined,
                           }}
                         >
                           <text x={230} y={265}>RECEPTION &amp; WAITING</text>
@@ -870,7 +890,7 @@ export const ViewportPane: React.FC<ViewportPaneProps> = ({
                       key={shp.id}
                       onClick={(e) => {
                         e.stopPropagation();
-                        onSelectShape(shp.id);
+                        if (activeTool === 'Select' && !calibratingScale && !aligningRevision) onSelectShape(shp.id);
                       }}
                       style={{ cursor: 'pointer' }}
                     >
@@ -912,7 +932,7 @@ export const ViewportPane: React.FC<ViewportPaneProps> = ({
                     key={shp.id}
                     onClick={(e) => {
                       e.stopPropagation();
-                      onSelectShape(shp.id);
+                      if (activeTool === 'Select' && !calibratingScale && !aligningRevision) onSelectShape(shp.id);
                     }}
                     style={{ cursor: 'pointer' }}
                   >
@@ -1195,31 +1215,27 @@ export const ViewportPane: React.FC<ViewportPaneProps> = ({
           </div>
         )}
 
-        {/* Bottom-Left Scale Indicator (v15.1 parity) */}
-        <div className="vp-scale-overlay">
-          <span>Scale: {activePlan?.scaleLabel ?? 'Unscaled'}</span>
-          <span>|</span>
-          <span>
-            Tool: {activeTool} ({activeResultType})
-          </span>
-          {activePlan && (
-            <>
-              <span>|</span>
-              <span>
-                X: {formatDimension(cursorWorld.x / activePlan.scaleRatio, measurementUnit, imperialDisplayMode)}, Y:{' '}
-                {formatDimension(cursorWorld.y / activePlan.scaleRatio, measurementUnit, imperialDisplayMode)}
-              </span>
-            </>
-          )}
-        </div>
+        <div className="viewport-readouts">
+          <div className="vp-scale-overlay">
+            <span>Scale: {activePlan?.scaleLabel ?? 'Unscaled'}</span>
+            {viewMode === '2D' && <>
+              <span>Tool: {activeTool} ({activeResultType})</span>
+              {activePlan && (
+                <span>
+                  X: {formatDimension(cursorWorld.x / activePlan.scaleRatio, measurementUnit, imperialDisplayMode)}, Y:{' '}
+                  {formatDimension(cursorWorld.y / activePlan.scaleRatio, measurementUnit, imperialDisplayMode)}
+                </span>
+              )}
+            </>}
+          </div>
 
-        {/* Bottom-Right Quick Help Hint */}
-        <div className="vp-mode-hint">
-          {viewMode === '3D'
-            ? 'Drag to rotate 3D model · Click shapes to inspect'
-            : draftPoints.length > 0
-            ? 'Left-click points · Press J to close · Right-click to finish'
-            : 'Wheel to zoom · Middle-drag to pan · Select tool or Ctrl+2 Polyline'}
+          <div className="vp-mode-hint">
+            {viewMode === '3D'
+              ? 'Drag to rotate · Right-drag to pan · Click to inspect'
+              : draftPoints.length > 0
+              ? 'Enter or right-click to finish · Click the first point to close · Esc to cancel'
+              : 'Wheel to zoom · Middle-drag to pan'}
+          </div>
         </div>
       </div>
 

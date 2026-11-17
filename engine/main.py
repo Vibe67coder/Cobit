@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import socket
 from datetime import datetime, timezone
 from typing import Any
 
 import uvicorn
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
 
 from db.storage import CobitXStorage
@@ -29,10 +31,11 @@ from services.ai_takeoff import (
 from services.cbx_compat import export_cbx_archive, import_costx_estimate, import_legacy_archive, import_pricelist_spreadsheet
 from services.export_engine import export_job_csv, export_job_excel, export_job_pdf
 from services.ifc_processor import generate_sample_office_ifc, process_ifc_bytes
+from services.measurement import MeasurementRequest, measure_points
 from services.plan_processor import auto_select_room_polygon, preview_pdf_pages, process_pdf_pages, process_uploaded_plan
 
 storage = CobitXStorage()
-app = FastAPI(title="CobitX Estimating Engine", version="15.1.0")
+app = FastAPI(title="CobitX Estimating Engine", version="15.1.1")
 
 app.add_middleware(
     CORSMiddleware,
@@ -63,10 +66,11 @@ def health() -> dict[str, Any]:
     return {
         "status": "ok",
         "service": "cobitx-engine",
-        "version": "15.1.0",
+        "version": "15.1.1",
         "sqlitePath": str(storage.sqlite_path),
         "duckdbPath": str(storage.duckdb_path),
-        "mcpReady": True,
+        "mcpReady": storage.mcp_enabled(),
+        "drawingImportApi": 2,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -139,34 +143,54 @@ async def mcp_test(body: McpProbeRequest) -> dict[str, Any]:
     return await probe_external_mcp(body.transport, body.endpointOrCommand)
 
 
-@app.post("/mcp")
-def mcp_jsonrpc(payload: dict[str, Any]) -> dict[str, Any]:
+@app.get("/mcp", response_model=None)
+def mcp_status(request: Request) -> dict[str, Any] | Response:
+    if "text/event-stream" in request.headers.get("accept", ""):
+        return Response(status_code=405, headers={"Allow": "POST"})
+    return {"service": "CobitX MCP", "enabled": storage.mcp_enabled(),
+            "transport": "Streamable HTTP", "connection": "Connect an MCP client using this URL."}
+
+
+@app.post("/mcp", response_model=None)
+def mcp_jsonrpc(payload: dict[str, Any]) -> dict[str, Any] | Response:
+    if not storage.mcp_enabled():
+        raise HTTPException(status_code=403, detail="Enable the built-in MCP server in CobitX settings.")
     rpc_id = payload.get("id")
     method = str(payload.get("method") or "")
     params = payload.get("params") or {}
     manifest = get_mcp_manifest()
+    if method.startswith("notifications/"):
+        return Response(status_code=202)
+    if method == "ping":
+        return {"jsonrpc": "2.0", "id": rpc_id, "result": {}}
 
     if method == "initialize":
         return {
             "jsonrpc": "2.0",
             "id": rpc_id,
             "result": {
-                "protocolVersion": manifest["protocolVersion"],
+                "protocolVersion": params.get("protocolVersion") if params.get("protocolVersion") in (
+                    "2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25",
+                ) else manifest["protocolVersion"],
                 "capabilities": {"tools": {"listChanged": False}, "resources": {"listChanged": False}},
-                "serverInfo": {"name": manifest["serverName"], "version": "15.1.0"},
+                "serverInfo": {"name": manifest["serverName"], "version": "15.1.1"},
             },
         }
-    if method == "notifications/initialized":
-        return {"jsonrpc": "2.0", "id": rpc_id, "result": {}}
     if method == "tools/list":
         tools = [
             {
                 "name": t["name"],
                 "description": t["description"],
-                "inputSchema": {
+                "annotations": {"readOnlyHint": t["name"] not in {
+                    "cobitx_propagate_pricelist", "cobitx_insert_estimate_row", "cobitx_update_rate_sheet",
+                }},
+                "inputSchema": t.get("inputSchema") or {
                     "type": "object",
                     "properties": {
-                        k: {"type": "string", "description": str(v)}
+                        k: {
+                            "type": "array" if "list[" in v else "number" if v == "number" else "string",
+                            "description": v,
+                        }
                         for k, v in (t.get("argsSchema") or {}).items()
                     },
                 },
@@ -183,8 +207,8 @@ def mcp_jsonrpc(payload: dict[str, Any]) -> dict[str, Any]:
                 "jsonrpc": "2.0",
                 "id": rpc_id,
                 "result": {
-                    "content": [{"type": "text", "text": json.dumps(out["result"])}],
-                    "structuredContent": out["result"],
+                    "content": out.get("content") or [{"type": "text", "text": json.dumps(out["result"])}],
+                    "structuredContent": out["result"] if isinstance(out["result"], dict) else {"result": out["result"]},
                     "isError": False,
                 },
             }
@@ -217,6 +241,14 @@ def mcp_jsonrpc(payload: dict[str, Any]) -> dict[str, Any]:
             },
         }
     return {"jsonrpc": "2.0", "id": rpc_id, "error": {"code": -32601, "message": f"Method not found: {method}"}}
+
+
+@app.post("/api/measurements/preview")
+def preview_measurement(request: MeasurementRequest) -> dict:
+    try:
+        return measure_points(storage.load_state() or {}, request.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 class AutoSelectRequest(BaseModel):
@@ -266,7 +298,7 @@ def auto_select_polygon(body: AutoSelectRequest) -> dict[str, Any]:
 async def import_ifc_plan(file: UploadFile = File(...)) -> dict[str, Any]:
     raw = await file.read()
     try:
-        return process_ifc_bytes(file.filename or "model.ifc", raw)
+        return await run_in_threadpool(process_ifc_bytes, file.filename or "model.ifc", raw)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Failed to parse IFC BIM model: {exc}") from exc
 
@@ -414,6 +446,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="CobitX Estimating Desktop Engine")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=47820)
+    parser.add_argument("--desktop-engine", action="store_true")
     parser.add_argument(
         "--stdio-mcp",
         action="store_true",
@@ -422,8 +455,19 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.stdio_mcp:
+        if not storage.mcp_enabled():
+            parser.error("Enable the built-in MCP server in CobitX settings.")
         mcp = build_mcp_server(storage)
         mcp.run(transport="stdio")
+    elif args.desktop_engine:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+            try:
+                listener.bind(("127.0.0.1", args.port))
+            except OSError:
+                listener.bind(("127.0.0.1", 0))
+            listener.listen(socket.SOMAXCONN)
+            print(f"COBITX_ENGINE_PORT={listener.getsockname()[1]}", flush=True)
+            uvicorn.Server(uvicorn.Config(app, log_level="info")).run(sockets=[listener])
     else:
         uvicorn.run(app, host=args.host, port=args.port, log_level="info")
 

@@ -138,6 +138,14 @@ class CobitXStorage:
             data["_persistedAt"] = row["updated_at"]
             return data
 
+    def mcp_enabled(self) -> bool:
+        with self._connect_sqlite() as conn:
+            row = conn.execute(
+                "SELECT json_extract(value_json, '$.options.mcpServerEnabled') AS enabled "
+                "FROM workspace_kv WHERE key = 'workspace_state'"
+            ).fetchone()
+        return row is None or row["enabled"] is None or bool(row["enabled"])
+
     def save_state(self, state: dict[str, Any]) -> dict[str, Any]:
         ts = self._now_iso()
         clean = {k: v for k, v in state.items() if not k.startswith("_")}
@@ -305,6 +313,10 @@ class CobitXStorage:
             raise ValueError("Only read-only SELECT queries are permitted via DuckDB SQL analytics tool.")
         con = duckdb.connect(str(self.duckdb_path), read_only=True)
         try:
+            statements = con.extract_statements(clean)
+            if len(statements) != 1 or statements[0].type != duckdb.StatementType.SELECT:
+                raise ValueError("Submit a single SELECT query.")
+            con.execute("SET enable_external_access = false")
             rel = con.execute(clean)
             cols = [d[0] for d in (rel.description or [])]
             rows = rel.fetchmany(200)

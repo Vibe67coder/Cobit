@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 
 import httpx
 from mcp.server.mcpserver import MCPServer
+from mcp.types import ImageContent
 
 from db.storage import CobitXStorage
 from services.ai_takeoff import (
@@ -19,6 +20,7 @@ from services.ai_takeoff import (
     ai_count_symbols,
     ai_scan_text_labels,
 )
+from services.measurement import MeasurementRequest, find_plan, measure_points, plan_context
 from services.export_engine import _compute_eff_qty, _compute_row_rate, _compute_trade_totals, export_job_csv
 
 _REF_TOKEN_RE = re.compile(r"@([A-Za-z0-9_-]+)")
@@ -360,8 +362,52 @@ def _export_boq_impl(storage: CobitXStorage, job_id: str, format_name: str = "su
     }
 
 
+def _list_plans(state: dict, job_id: str) -> list[dict]:
+    job = next((job for job in state.get("jobs", []) if job.get("id") == job_id), None)
+    if job is None:
+        raise ValueError("Job not found. Use cobitx_list_jobs to get the job ID.")
+    return [
+        {"id": plan.get("id"), "name": plan.get("name"), "kind": plan.get("kind"), "pageNumber": plan.get("pageNumber", 1),
+         "scaleLabel": plan.get("scaleLabel"), "modelElementCount": len(plan.get("ifcElements") or [])}
+        for plan in job.get("plans", [])
+    ]
+
+
+def _drawing_image(plan: dict) -> ImageContent:
+    raw = plan.get("imageDataUrl") or ""
+    header, separator, data = raw.partition(",")
+    mime = header.removeprefix("data:").removesuffix(";base64")
+    if not separator or not header.endswith(";base64") or mime not in ("image/png", "image/jpeg", "image/webp"):
+        raise ValueError("This drawing has no attached raster preview.")
+    return ImageContent(type="image", mimeType=mime, data=data)
+
+
+PLAN_TOOLS = {
+    "cobitx_get_plan_context": "Read the drawing scale, image coordinates, and snap points for a job and plan.",
+    "cobitx_get_drawing_image": "Read the stored drawing image for visual takeoff. Fetch plan context for coordinates.",
+    "cobitx_measure_points": "Preview takeoff from viewport drawing coordinates without changing the estimate.",
+}
+
+
 def build_mcp_server(storage: CobitXStorage) -> MCPServer:
     mcp = MCPServer("CobitX Estimating MCP Server")
+
+    @mcp.tool()
+    def cobitx_list_plans_and_bim(job_id: str) -> list[dict]:
+        """List drawing and IFC model IDs for the selected job."""
+        return _list_plans(storage.load_state() or {}, job_id)
+
+    @mcp.tool(description=PLAN_TOOLS["cobitx_get_plan_context"])
+    def cobitx_get_plan_context(job_id: str, plan_id: str) -> dict:
+        return plan_context(find_plan(storage.load_state() or {}, job_id, plan_id))
+
+    @mcp.tool(description=PLAN_TOOLS["cobitx_get_drawing_image"])
+    def cobitx_get_drawing_image(job_id: str, plan_id: str) -> ImageContent:
+        return _drawing_image(find_plan(storage.load_state() or {}, job_id, plan_id))
+
+    @mcp.tool(description=PLAN_TOOLS["cobitx_measure_points"])
+    def cobitx_measure_points(request: MeasurementRequest) -> dict:
+        return measure_points(storage.load_state() or {}, request.model_dump())
 
     @mcp.tool()
     def cobitx_list_jobs(kind: str | None = None) -> list[dict[str, Any]]:
@@ -512,6 +558,19 @@ def get_mcp_manifest() -> dict[str, Any]:
         "serverName": "CobitX Estimating MCP Server",
         "protocolVersion": "2024-11-05",
         "tools": [
+            {"name": "cobitx_list_plans_and_bim", "description": "List drawing and IFC model IDs for a job.",
+             "argsSchema": {"job_id": "string"}},
+            *[
+                {
+                    "name": name, "description": description,
+                    "argsSchema": {"job_id": "string", "plan_id": "string"},
+                    "inputSchema": MeasurementRequest.model_json_schema() if name == "cobitx_measure_points" else {
+                        "type": "object", "required": ["job_id", "plan_id"],
+                        "properties": {"job_id": {"type": "string"}, "plan_id": {"type": "string"}},
+                    },
+                }
+                for name, description in PLAN_TOOLS.items()
+            ],
             {
                 "name": "cobitx_list_jobs",
                 "description": "List all Jobs and Price Lists in CobitX SQLite storage.",
@@ -602,6 +661,16 @@ def execute_mcp_tool(
 ) -> dict[str, Any]:
     args = arguments or {}
     state = storage.load_state() or {}
+    if tool_name == "cobitx_list_plans_and_bim":
+        return {"tool": tool_name, "result": _list_plans(state, str(args.get("job_id") or ""))}
+    if tool_name == "cobitx_measure_points":
+        return {"tool": tool_name, "result": measure_points(state, args)}
+    if tool_name in ("cobitx_get_plan_context", "cobitx_get_drawing_image"):
+        plan = find_plan(state, str(args.get("job_id") or ""), str(args.get("plan_id") or ""))
+        if tool_name == "cobitx_get_drawing_image":
+            return {"tool": tool_name, "result": {"planName": plan.get("name")},
+                    "content": [_drawing_image(plan).model_dump(mode="json", by_alias=True, exclude_none=True)]}
+        return {"tool": tool_name, "result": plan_context(plan)}
     if tool_name == "cobitx_list_jobs":
         kind = args.get("kind")
         jobs = state.get("jobs", [])
@@ -750,7 +819,7 @@ async def probe_external_mcp(transport: str, endpoint_or_command: str) -> dict[s
                     "params": {
                         "protocolVersion": "2024-11-05",
                         "capabilities": {},
-                        "clientInfo": {"name": "CobitX", "version": "15.1.0"},
+                        "clientInfo": {"name": "CobitX", "version": "15.1.1"},
                     },
                 },
             )

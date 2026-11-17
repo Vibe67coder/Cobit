@@ -408,8 +408,8 @@ def test_mcp_http_jsonrpc_and_new_tools(tmp_path: Path) -> None:
     assert r_init.json()["result"]["serverInfo"]["name"] == "CobitX Estimating MCP Server"
 
     r_notif = client.post("/mcp", json={"jsonrpc": "2.0", "method": "notifications/initialized"})
-    assert r_notif.status_code == 200
-    assert r_notif.json()["result"] == {}
+    assert r_notif.status_code == 202
+    assert r_notif.content == b""
 
     # 2. tools/list
     r_tools = client.post("/mcp", json={"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
@@ -742,3 +742,55 @@ def test_costx_estimate_and_dimension_summary_import() -> None:
     item = result.json()["job"]["rows"][1]
     assert (item["description"], item["resultType"], item["quantity"], item["rate"]) == ("Floor tiling", "Area", 42.5, 0)
 
+
+def test_model_geometry_and_revit_rejection() -> None:
+    from main import app
+
+    client = TestClient(app)
+    invalid = client.post("/api/plans/import-ifc", files={"file": ("Building.rvt", b"Revit document")})
+    assert invalid.status_code == 400
+    assert "Export the model to IFC" in invalid.json()["detail"]
+    sample = client.post("/api/plans/sample-ifc")
+    assert sample.status_code == 200
+    body = sample.json()
+    assert body["levels"] == ["Ground Floor", "Level 01"]
+    assert all(element["vertices"] and element["indices"] for element in body["ifcElements"])
+    slab = next(row for row in body["classSummaries"] if row["ifcClass"] == "IfcSlab")
+    assert abs(slab["totalAreaM2"] - 432) < 0.01
+
+
+def test_measurement_rest_and_mcp_are_read_only(tmp_path: Path, monkeypatch) -> None:
+    import main as engine
+
+    workspace = engine.CobitXStorage(tmp_path)
+    monkeypatch.setattr(engine, "storage", workspace)
+    job = {"id": "job-q", "name": "Quantity Job", "kind": "Job", "rows": [], "plans": [
+        {"id": "plan-q", "name": "Drawing", "kind": "Raster PDF", "scaleRatio": 40,
+         "scaleLabel": "Calibrated", "imageDataUrl": "data:image/png;base64,AA=="},
+    ]}
+    workspace.save_state({"jobs": [job], "options": {"mcpServerEnabled": True}})
+    request = {
+        "job_id": "job-q", "plan_id": "plan-q", "result_type": "Area",
+        "points": [{"x": 40, "y": 30}, {"x": 120, "y": 30}, {"x": 120, "y": 70}, {"x": 40, "y": 70}],
+    }
+    client = TestClient(engine.app)
+    result = client.post("/api/measurements/preview", json=request)
+    assert result.status_code == 200
+    assert result.json()["quantity"] == 2
+    assert result.json()["unit"] == "m²"
+    assert result.json()["needsCalibration"] is False
+
+    args = {"job_id": "job-q", "plan_id": "plan-q"}
+    image = client.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "cobitx_get_drawing_image", "arguments": args}})
+    assert image.json()["result"]["content"][0]["type"] == "image"
+    assert image.json()["result"]["content"][0]["mimeType"] == "image/png"
+    call = client.post("/mcp", json={"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": {"name": "cobitx_measure_points", "arguments": request}})
+    assert call.json()["result"]["structuredContent"]["quantity"] == 2
+    assert workspace.load_state()["jobs"][0]["rows"] == []
+    assert client.get("/mcp", headers={"Accept": "text/event-stream"}).status_code == 405
+
+    workspace.save_state({"jobs": [job], "options": {"mcpServerEnabled": False}})
+    assert client.get("/mcp").json()["enabled"] is False
+    assert client.post("/mcp", json={"method": "tools/list", "id": 3}).status_code == 403

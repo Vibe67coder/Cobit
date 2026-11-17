@@ -44,11 +44,13 @@ import { JobWorkspace } from './components/workspace/JobWorkspace';
 import { OptionsModal } from './components/modals/OptionsModal';
 import { ClientManagerModal } from './components/modals/ClientManagerModal';
 import { GroupingCodesModal } from './components/modals/GroupingCodesModal';
+import { defaultResultUnit } from './utils/measurement';
 
 interface JobHistorySnapshot {
   rows: EstimateRow[];
   shapes: TakeoffShape[];
   plans: PlanDocument[];
+  externalRefs?: JobRecord['externalRefs'];
 }
 
 export function App() {
@@ -102,10 +104,18 @@ export function App() {
         setEngineConnected(true);
         const persisted = await loadWorkspaceState();
         if (!active) return;
-        if (persisted && Array.isArray(persisted.jobs) && persisted.jobs.length > 0) {
+        if (persisted && Array.isArray(persisted.jobs)) {
           setProjects(persisted.projects ?? INITIAL_PROJECTS);
           setFolders(persisted.folders ?? INITIAL_FOLDERS);
-          setJobs(persisted.jobs);
+          const countUnit = persisted.options?.defaultCountUnit ?? INITIAL_OPTIONS.defaultCountUnit;
+          setJobs(persisted.jobs.map((job) => ({
+            ...job,
+            rows: job.rows.map((row) => {
+              if (row.rowType !== 'Item' || !row.resultType || row.unit !== 'm²' ||
+                row.quantity || row.rate || row.calcRows?.length) return row;
+              return { ...row, unit: defaultResultUnit(row.resultType, countUnit) };
+            }),
+          })));
           setCompanies(persisted.companies ?? INITIAL_COMPANIES);
           setContacts(persisted.contacts ?? INITIAL_CONTACTS);
           setConstants(persisted.constants ?? INITIAL_CONSTANTS);
@@ -171,6 +181,7 @@ export function App() {
           rows: target.rows,
           shapes: target.shapes,
           plans: target.plans,
+          externalRefs: target.externalRefs,
         };
         setHistoryMap((hm) => {
           const cur = hm[jobId] ?? { past: [], future: [] };
@@ -210,6 +221,7 @@ export function App() {
       rows: job.rows,
       shapes: job.shapes,
       plans: job.plans,
+      externalRefs: job.externalRefs,
     };
     setHistoryMap((prev) => ({
       ...prev,
@@ -236,6 +248,7 @@ export function App() {
       rows: job.rows,
       shapes: job.shapes,
       plans: job.plans,
+      externalRefs: job.externalRefs,
     };
     setHistoryMap((prev) => ({
       ...prev,

@@ -1081,14 +1081,23 @@ button {
   margin: 0 3px;
 }
 
-.vp-scale-overlay {
+.viewport-readouts {
   position: absolute;
-  bottom: 10px;
-  left: 10px;
+  inset: auto 10px 10px;
   z-index: 12;
   display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  justify-content: space-between;
+  gap: 4px;
+  pointer-events: none;
+}
+
+.vp-scale-overlay {
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 4px 12px;
   background: rgba(15, 23, 42, 0.84);
   color: #ffffff;
   padding: 4px 10px;
@@ -1098,10 +1107,7 @@ button {
 }
 
 .vp-mode-hint {
-  position: absolute;
-  bottom: 10px;
-  right: 10px;
-  z-index: 12;
+  margin-left: auto;
   background: rgba(255, 255, 255, 0.92);
   border: 1px solid var(--border-main);
   padding: 3px 9px;
@@ -1648,8 +1654,10 @@ button {
 }
 
 .viewport-floating-toolbar {
+  width: max-content;
   max-width: calc(100% - 16px);
-  overflow-x: auto;
+  flex-wrap: wrap;
+  justify-content: center;
 }
 
 .viewport-floating-toolbar .vp-tool-btn {
@@ -1665,3 +1673,37 @@ button {
   overflow-wrap: anywhere;
 }
 
+
+.worksheet-grid tr[data-keyboard-row],
+.worksheet-grid[data-selected-column="1"] tr[data-keyboard-trade] td:nth-child(1),
+.worksheet-grid[data-selected-column="2"] tr[data-keyboard-trade] td:nth-child(2),
+.worksheet-grid[data-selected-column="3"] tr[data-keyboard-trade] td:nth-child(3),
+.worksheet-grid[data-selected-column="4"] tr[data-keyboard-trade] td:nth-child(4),
+.worksheet-grid[data-selected-column="5"] tr[data-keyboard-trade] td:nth-child(5),
+.worksheet-grid[data-selected-column="6"] tr[data-keyboard-trade] td:nth-child(6),
+.worksheet-grid[data-selected-column="7"] tr[data-keyboard-trade] td:nth-child(7),
+.worksheet-grid[data-selected-column="8"] tr[data-keyboard-trade] td:nth-child(8),
+.worksheet-grid[data-selected-column="9"] tr[data-keyboard-trade] td:nth-child(9),
+.worksheet-grid[data-selected-column="10"] tr[data-keyboard-trade] td:nth-child(10),
+.worksheet-grid[data-selected-column="11"] tr[data-keyboard-trade] td:nth-child(11),
+.worksheet-grid[data-selected-column="12"] tr[data-keyboard-trade] td:nth-child(12),
+.worksheet-grid[data-selected-column="13"] tr[data-keyboard-trade] td:nth-child(13),
+.worksheet-grid[data-selected-column="14"] tr[data-keyboard-trade] td:nth-child(14),
+.worksheet-grid[data-selected-column="15"] tr[data-keyboard-trade] td:nth-child(15),
+.worksheet-grid[data-selected-column="16"] tr[data-keyboard-trade] td:nth-child(16),
+.worksheet-grid[data-selected-column="17"] tr[data-keyboard-trade] td:nth-child(17),
+.worksheet-grid[data-selected-column="18"] tr[data-keyboard-trade] td:nth-child(18),
+.worksheet-grid[data-selected-column="19"] tr[data-keyboard-trade] td:nth-child(19),
+.worksheet-grid[data-selected-column="20"] tr[data-keyboard-trade] td:nth-child(20),
+.worksheet-grid[data-selected-column="21"] tr[data-keyboard-trade] td:nth-child(21),
+.worksheet-grid[data-selected-column="22"] tr[data-keyboard-trade] td:nth-child(22),
+.worksheet-grid[data-selected-column="23"] tr[data-keyboard-trade] td:nth-child(23),
+.worksheet-grid[data-selected-column="24"] tr[data-keyboard-trade] td:nth-child(24) {
+  background: var(--bg-ribbon-active);
+  box-shadow: inset 0 -1px var(--border-focus);
+}
+
+.vp-tool-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}

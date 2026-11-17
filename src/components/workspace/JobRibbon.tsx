@@ -102,6 +102,12 @@ interface JobRibbonProps {
   takeoffDisplay: TakeoffDisplayState;
   onChangeTakeoffDisplay: (next: TakeoffDisplayState) => void;
   isReadOnly: boolean;
+  canResumeEditing: boolean;
+  canEditPlan: boolean;
+  canEditPdf: boolean;
+  hasBimPlan: boolean;
+  canShow3D: boolean;
+  hasDraft: boolean;
   onToggleReadOnly: () => void;
   onToggleLockTrade: () => void;
   onOpenConstants: () => void;
@@ -162,6 +168,12 @@ export const JobRibbon: React.FC<JobRibbonProps> = ({
   takeoffDisplay,
   onChangeTakeoffDisplay,
   isReadOnly,
+  canResumeEditing,
+  canEditPlan,
+  canEditPdf,
+  hasBimPlan,
+  canShow3D,
+  hasDraft,
   onToggleReadOnly,
   onToggleLockTrade,
   onOpenConstants,
@@ -223,6 +235,9 @@ export const JobRibbon: React.FC<JobRibbonProps> = ({
           <span style={{ fontSize: 10.5 }}>
             Right-click any button to pin to Quick Access Toolbar · Ctrl+F1 to collapse
           </span>
+          {canResumeEditing && (
+            <button className="tool-btn-mini" onClick={onToggleReadOnly} title="Exit Read-Only mode">Enable Editing</button>
+          )}
           <button
             className="ribbon-collapse-btn"
             onClick={onToggleRibbon}
@@ -320,6 +335,7 @@ export const JobRibbon: React.FC<JobRibbonProps> = ({
                     </button>
                     <button
                       className={`ribbon-btn-lg ${activeTool === 'Polyline' ? 'active' : ''}`}
+                      disabled={!canEditPlan}
                       onClick={() => onSelectTool('Polyline')}
                       title="Polyline Tool (Ctrl+2)"
                       onContextMenu={(e) => handleRightClickPin(e, 'polyline', 'Polyline')}
@@ -329,6 +345,7 @@ export const JobRibbon: React.FC<JobRibbonProps> = ({
                     </button>
                     <button
                       className={`ribbon-btn-lg ${activeTool === 'Auto Select' ? 'active' : ''}`}
+                      disabled={!canEditPlan}
                       onClick={() => onSelectTool('Auto Select')}
                       title="Auto Select Tool (Ctrl+3)"
                     >
@@ -338,14 +355,16 @@ export const JobRibbon: React.FC<JobRibbonProps> = ({
                     <div className="ribbon-btn-stack">
                       <button
                         className={`ribbon-btn-sm ${activeTool === 'Rectangle' ? 'active' : ''}`}
-                        onClick={() => onSelectTool('Rectangle')}
+                        disabled={!canEditPlan}
+                      onClick={() => onSelectTool('Rectangle')}
                         title="Rectangle (Ctrl+4)"
                       >
                         <Square size={12} color="#16a34a" /> Rectangle
                       </button>
                       <button
                         className={`ribbon-btn-sm ${activeTool === 'Line' ? 'active' : ''}`}
-                        onClick={() => onSelectTool('Line')}
+                        disabled={!canEditPlan}
+                      onClick={() => onSelectTool('Line')}
                         title="Line (Ctrl+5)"
                       >
                         <Minus size={12} color="#0284c7" /> Line
@@ -354,21 +373,23 @@ export const JobRibbon: React.FC<JobRibbonProps> = ({
                     <div className="ribbon-btn-stack">
                       <button
                         className={`ribbon-btn-sm ${activeTool === 'Count' ? 'active' : ''}`}
-                        onClick={() => onSelectTool('Count')}
+                        disabled={!canEditPlan}
+                      onClick={() => onSelectTool('Count')}
                         title="Count (Ctrl+6)"
                       >
                         <Hash size={12} color="#ea580c" /> Count
                       </button>
                       <button
                         className={`ribbon-btn-sm ${activeTool === 'Ruler' ? 'active' : ''}`}
-                        onClick={() => onSelectTool('Ruler')}
+                        disabled={!canEditPlan}
+                      onClick={() => onSelectTool('Ruler')}
                         title="Ruler (Ctrl+7)"
                       >
                         <Ruler size={12} color="#64748b" /> Ruler
                       </button>
                     </div>
                     <div className="ribbon-btn-stack">
-                      <button className="ribbon-btn-sm" onClick={onCloseShape} title="Close Shape (J)">
+                      <button className="ribbon-btn-sm" disabled={!hasDraft} onClick={onCloseShape} title="Close Shape (J)">
                         <CornerDownLeft size={12} /> Close (J)
                       </button>
                       <div style={{ display: 'flex', gap: 2 }}>
@@ -422,6 +443,7 @@ export const JobRibbon: React.FC<JobRibbonProps> = ({
                   <div className="ribbon-group-controls">
                     <button
                       className="ribbon-btn-lg"
+                      disabled={!canEditPlan}
                       onClick={() => onOpenAiTool('AutoArea')}
                     >
                       <Sparkles size={17} color="#7c3aed" />
@@ -429,6 +451,7 @@ export const JobRibbon: React.FC<JobRibbonProps> = ({
                     </button>
                     <button
                       className="ribbon-btn-lg"
+                      disabled={!canEditPlan}
                       onClick={() => onOpenAiTool('CountSymbols')}
                     >
                       <Sparkles size={17} color="#0d9488" />
@@ -436,6 +459,7 @@ export const JobRibbon: React.FC<JobRibbonProps> = ({
                     </button>
                     <button
                       className="ribbon-btn-lg"
+                      disabled={!canEditPlan}
                       onClick={() => onOpenAiTool('ScanText')}
                     >
                       <ScanText size={17} color="var(--brand-blue)" />
@@ -474,6 +498,7 @@ export const JobRibbon: React.FC<JobRibbonProps> = ({
                 <div className="ribbon-group-controls">
                   <button
                     className="ribbon-btn-lg"
+                    disabled={!canEditPlan}
                     onClick={onStartScaleCalibration}
                   >
                     <Compass size={17} color="var(--brand-blue)" />
@@ -481,6 +506,7 @@ export const JobRibbon: React.FC<JobRibbonProps> = ({
                   </button>
                   <button
                     className="ribbon-btn-lg"
+                    disabled={!canEditPlan}
                     onClick={() => onOpenAiTool('AutoScale')}
                   >
                     <Sparkles size={17} color="#7c3aed" />
@@ -488,6 +514,7 @@ export const JobRibbon: React.FC<JobRibbonProps> = ({
                   </button>
                   <button
                     className="ribbon-btn-lg"
+                    disabled={!canEditPlan}
                     onClick={onRotateActivePlan}
                   >
                     <RotateCw size={17} />
@@ -504,20 +531,18 @@ export const JobRibbon: React.FC<JobRibbonProps> = ({
                     <label className="form-checkbox-row" style={{ fontSize: 11 }}>
                       <input
                         type="checkbox"
-                        checked={optimisePdf.flattenPdf}
-                        onChange={(e) =>
-                          onChangeOptimisePdf({ ...optimisePdf, flattenPdf: e.target.checked })
-                        }
+                        disabled
+                        checked={false}
+                        title="PDF underlays are already rendered as images."
                       />
                       Flatten PDF
                     </label>
                     <label className="form-checkbox-row" style={{ fontSize: 11 }}>
                       <input
                         type="checkbox"
-                        checked={optimisePdf.rasteriseText}
-                        onChange={(e) =>
-                          onChangeOptimisePdf({ ...optimisePdf, rasteriseText: e.target.checked })
-                        }
+                        disabled
+                        checked={false}
+                        title="PDF underlays are already rendered as images."
                       />
                       Rasterise Text
                     </label>
@@ -526,7 +551,8 @@ export const JobRibbon: React.FC<JobRibbonProps> = ({
                     <label className="form-checkbox-row" style={{ fontSize: 11 }}>
                       <input
                         type="checkbox"
-                        checked={optimisePdf.singleColour}
+                        disabled={!canEditPdf}
+                        checked={canEditPdf && optimisePdf.singleColour}
                         onChange={(e) =>
                           onChangeOptimisePdf({ ...optimisePdf, singleColour: e.target.checked })
                         }
@@ -542,6 +568,7 @@ export const JobRibbon: React.FC<JobRibbonProps> = ({
                 <div className="ribbon-group-controls">
                   <button
                     className="ribbon-btn-lg"
+                    disabled={!canEditPlan}
                     onClick={onOpenRevisionModal}
                   >
                     <GitBranch size={17} color="#d97706" />
@@ -549,6 +576,7 @@ export const JobRibbon: React.FC<JobRibbonProps> = ({
                   </button>
                   <button
                     className="ribbon-btn-lg"
+                    disabled={!canEditPlan}
                     onClick={onStartRevisionAlign}
                   >
                     <Ruler size={17} />
@@ -562,6 +590,7 @@ export const JobRibbon: React.FC<JobRibbonProps> = ({
                 <div className="ribbon-group-controls">
                   <button
                     className="ribbon-btn-lg"
+                    disabled={viewMode === '3D'}
                     onClick={onSaveSnapshot}
                   >
                     <Camera size={17} color="var(--brand-blue)" />
@@ -569,10 +598,12 @@ export const JobRibbon: React.FC<JobRibbonProps> = ({
                   </button>
                   <button
                     className="ribbon-btn-lg"
+                    disabled={!hasBimPlan || viewMode !== '3D'}
                     onClick={onOpenImportIfc}
+                    title="Set measurement mapping when importing a new IFC file"
                   >
                     <Tags size={17} color="#0d9488" />
-                    <span>Result Mapping</span>
+                    <span>Import with Mapping</span>
                   </button>
                 </div>
                 <div className="ribbon-group-label">Snapshots &amp; BIM</div>
@@ -725,6 +756,7 @@ export const JobRibbon: React.FC<JobRibbonProps> = ({
                   </button>
                   <button
                     className={`ribbon-btn-lg ${viewMode === '3D' ? 'active' : ''}`}
+                    disabled={!canShow3D}
                     onClick={() => onSetViewMode('3D')}
                   >
                     <Box size={17} color="#0d9488" />

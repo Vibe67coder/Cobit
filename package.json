@@ -1,7 +1,7 @@
 {
   "name": "cobitx",
   "private": true,
-  "version": "15.1.0",
+  "version": "15.1.1",
   "license": "UNLICENSED",
   "author": "David Joia",
   "description": "CobitX Estimating & Construction Takeoff Desktop Suite (.exe)",
@@ -36,6 +36,7 @@
     "electron-builder": "^26.18.0",
     "oxlint": "^1.90.0",
     "typescript": "~7.0.2",
-    "vite": "^8.3.6"
+    "vite": "^8.3.6",
+    "web-ifc": "^0.0.79"
   }
 }

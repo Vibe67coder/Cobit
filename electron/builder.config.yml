@@ -9,6 +9,15 @@ files:
   - dist-electron/**/*
   - package.json
 extraResources:
+  - from: engine/services/ifc_geometry.cjs
+    to: ifc/ifc_geometry.cjs
+  - from: node_modules/web-ifc/
+    to: ifc/node_modules/web-ifc/
+    filter:
+      - package.json
+      - web-ifc-api-node.js
+      - web-ifc-node.wasm
+      - LICENSE.md
   - from: engine/dist/
     to: engine/
     filter:

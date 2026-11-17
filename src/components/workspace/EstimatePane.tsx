@@ -119,6 +119,8 @@ interface EstimatePaneProps {
   lowerTab: 'Calc' | 'Rate';
   onChangeLowerTab: (tab: 'Calc' | 'Rate') => void;
   onSelectRow: (id: string) => void;
+  onChangeResultType: (row: EstimateRow, result: ResultType) => void;
+  onDeleteRows: (ids: string[]) => void;
   onSelectCalcRow: (id: string) => void;
   onUpdateRow: (id: string, patch: Partial<EstimateRow>) => void;
   onToggleCollapse: (id: string) => void;
@@ -148,6 +150,8 @@ export const EstimatePane: React.FC<EstimatePaneProps> = ({
   lowerTab,
   onChangeLowerTab,
   onSelectRow,
+  onChangeResultType,
+  onDeleteRows,
   onSelectCalcRow,
   onUpdateRow,
   onToggleCollapse,
@@ -184,6 +188,7 @@ export const EstimatePane: React.FC<EstimatePaneProps> = ({
   ]);
   const [showColumnChooser, setShowColumnChooser] = useState(false);
   const [splitPct, setSplitPct] = useState(64);
+  const [selection, setSelection] = useState<{ rowId: string; column?: number } | null>(null);
   const [editingCell, setEditingCell] = useState<{ rowId: string; field: string } | null>(null);
   const [calcContextMenu, setCalcContextMenu] = useState<{
     x: number;
@@ -235,6 +240,50 @@ export const EstimatePane: React.FC<EstimatePaneProps> = ({
       .filter((r) => !isHidden(r))
       .map((r) => ({ row: r, depth: depthOf(r) }));
   }, [rows]);
+
+  const tradeForRow = (rowId: string) => {
+    let row = rows.find((item) => item.id === rowId);
+    const visited = new Set<string>();
+    while (row?.parentId && !visited.has(row.id)) {
+      visited.add(row.id);
+      row = rows.find((item) => item.id === row?.parentId);
+    }
+    return row?.rowType === 'Trade' ? row.id : rowId;
+  };
+
+  const handleEstimateKey = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) return;
+    if (!target.matches('input, select, textarea') && (event.code === 'Space' || event.key === 'Delete')) {
+      const cell = target.closest<HTMLTableCellElement>('td');
+      const rowId = cell?.parentElement?.dataset.worksheetRow ?? selectedRowId;
+      if (rowId && event.code === 'Space' && (event.shiftKey || event.ctrlKey) && cell) {
+        event.preventDefault();
+        event.stopPropagation();
+        setSelection(event.ctrlKey ? { rowId: tradeForRow(rowId), column: cell.cellIndex } : { rowId });
+        return;
+      }
+      if (rowId && event.ctrlKey && event.key === 'Delete') {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!isReadOnly && !event.repeat) onDeleteRows([rowId]);
+        return;
+      }
+    }
+    if (event.key === 'Escape' && selection && !editingCell) {
+      setSelection(null);
+      event.preventDefault();
+    }
+    navigateWorksheet(
+      event,
+      upperTab === 'Estimate' && !isReadOnly ? onInsertItem : undefined,
+      () => {
+        if (!editingCell) return false;
+        setEditingCell(null);
+        return true;
+      },
+    );
+  };
 
   const groupedByCode = useMemo(() => {
     const map: Record<string, { code: string; items: EstimateRow[]; total: number }> = {};
@@ -420,6 +469,9 @@ export const EstimatePane: React.FC<EstimatePaneProps> = ({
           <button className="tool-btn-mini" disabled={isReadOnly} onClick={onAddItemEnd} title="Add Item at End (Ctrl+Shift+I)">
             <Plus size={12} color="#0284c7" /> Add New
           </button>
+          <button className="tool-btn-mini" disabled={isReadOnly || !selectedRowId} onClick={() => selectedRowId && onDeleteRows([selectedRowId])} title="Delete estimate row (Ctrl+Delete)">
+            <Trash2 size={12} /> Delete
+          </button>
           <button className="tool-btn-mini" disabled={isReadOnly} onClick={onUnindentRow} title="Unindent (Ctrl+>)">
             <Outdent size={12} />
           </button>
@@ -470,16 +522,9 @@ export const EstimatePane: React.FC<EstimatePaneProps> = ({
           tabIndex={0}
           aria-label={isPriceList ? 'Price list worksheet' : 'Estimate worksheet'}
           onFocus={(event) => focusWorksheet(event, onSelectRow)}
-          onClick={clickWorksheet}
-          onKeyDownCapture={(event) => navigateWorksheet(
-            event,
-            upperTab === 'Estimate' && !isReadOnly ? onInsertItem : undefined,
-            () => {
-              if (!editingCell) return false;
-              setEditingCell(null);
-              return true;
-            },
-          )}
+          onClick={(event) => { setSelection(null); clickWorksheet(event); }}
+          onKeyDownCapture={handleEstimateKey}
+          data-selected-column={selection?.column === undefined ? undefined : selection.column + 1}
         >
           {upperTab === 'Estimate' ? (
             <table className="cubit-table" style={{ minWidth: activeColumns.reduce((width, column) => width + (column.width ?? 0), 0) }}>
@@ -545,6 +590,8 @@ export const EstimatePane: React.FC<EstimatePaneProps> = ({
                     <tr
                       key={row.id}
                       data-worksheet-row={row.id}
+                      data-keyboard-row={selection?.rowId === row.id && selection.column === undefined ? true : undefined}
+                      data-keyboard-trade={selection?.column !== undefined && selection.rowId === tradeForRow(row.id) ? true : undefined}
                       className={rowCls}
                       onClick={() => onSelectRow(row.id)}
                     >
@@ -701,7 +748,7 @@ export const EstimatePane: React.FC<EstimatePaneProps> = ({
                                   style={{ height: 20, fontSize: 10.5, padding: '0 2px' }}
                                   value={row.resultType ?? 'Area'}
                                   onChange={(e) =>
-                                    onUpdateRow(row.id, { resultType: e.target.value as ResultType })
+                                    onChangeResultType(row, e.target.value as ResultType)
                                   }
                                 >
                                   {RESULT_TYPES.map((rt) => (

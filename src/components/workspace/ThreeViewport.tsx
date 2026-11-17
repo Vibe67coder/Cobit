@@ -1,10 +1,15 @@
-import React, { useEffect, useEffectEvent, useRef, useState } from 'react';
+import React, { useEffect, useEffectEvent, useImperativeHandle, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import type { IfcElementGeom, PlanDocument, TakeoffShape } from '../../types/cubit';
+import type { PlanDocument, TakeoffShape } from '../../types/cubit';
 import { formatNumber } from '../../utils/estimateCalc';
 
+export interface ThreeViewportHandle {
+  fit: (selectedShapeId?: string | null) => void;
+}
+
 interface ThreeViewportProps {
+  ref?: React.Ref<ThreeViewportHandle>;
   activePlan: PlanDocument | undefined;
   shapes: TakeoffShape[];
   selectedShapeId: string | null;
@@ -13,6 +18,7 @@ interface ThreeViewportProps {
 }
 
 export const ThreeViewport: React.FC<ThreeViewportProps> = ({
+  ref,
   activePlan,
   shapes,
   selectedShapeId,
@@ -24,7 +30,10 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
   const [xrayMode, setXrayMode] = useState(false);
   const modelRef = useRef<{ group: THREE.Group; pickables: THREE.Object3D[] } | null>(null);
   const selectShape = useEffectEvent(onSelectShape);
-  const controlsResetRef = useRef<(() => void) | null>(null);
+  const fitCameraRef = useRef<ThreeViewportHandle['fit'] | null>(null);
+  const resetCameraRef = useRef<(() => void) | null>(null);
+  const fittedPlanRef = useRef<string | undefined>(undefined);
+  useImperativeHandle(ref, () => ({ fit: (shapeId) => fitCameraRef.current?.(shapeId) }), []);
 
   useEffect(() => {
     const container = mountRef.current;
@@ -121,7 +130,35 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
     renderer.domElement.addEventListener('pointerdown', onPointerDown);
     renderer.domElement.addEventListener('pointerup', onPointerUp);
 
-    controlsResetRef.current = () => controls.reset();
+    fitCameraRef.current = (shapeId) => {
+      const objects = shapeId ? pickables.filter((object) => object.userData.shapeId === shapeId) : pickables;
+      if (!objects.length) {
+        if (!shapeId) controls.reset();
+        return;
+      }
+      const bounds = new THREE.Box3();
+      for (const object of objects) bounds.expandByObject(object);
+      const center = bounds.getCenter(new THREE.Vector3());
+      const radius = Math.max(0.25, bounds.getBoundingSphere(new THREE.Sphere()).radius);
+      const halfFov = THREE.MathUtils.degToRad(camera.fov / 2);
+      const angle = Math.min(halfFov, Math.atan(Math.tan(halfFov) * camera.aspect));
+      const distance = (radius / Math.sin(angle)) * 1.14;
+      const direction = camera.position.clone().sub(controls.target).normalize();
+      controls.target.copy(center);
+      camera.position.copy(center).addScaledVector(direction, distance);
+      camera.far = Math.max(500, distance + radius * 10);
+      camera.updateProjectionMatrix();
+      if (!shapeId) {
+        grid.position.set(center.x, bounds.min.y - 0.03, center.z);
+        grid.scale.setScalar(Math.max(1, radius / 20));
+      }
+      controls.update();
+    };
+
+    resetCameraRef.current = () => {
+      controls.reset();
+      fitCameraRef.current?.();
+    };
 
     const onResize = () => {
       if (!container) return;
@@ -155,13 +192,11 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
       renderer.dispose();
       renderer.domElement.remove();
       modelRef.current = null;
-      controlsResetRef.current = null;
+      fitCameraRef.current = null;
+      resetCameraRef.current = null;
+      fittedPlanRef.current = undefined;
     };
   }, []);
-
-  useEffect(() => {
-    controlsResetRef.current?.();
-  }, [activePlan?.id]);
 
   useEffect(() => {
     if (!modelRef.current) return;
@@ -170,48 +205,35 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
       (activePlan?.layers ?? []).filter((l) => l.visible).map((l) => l.name)
     );
 
-    // 1. Render imported IFC BIM 3D solids if active plan contains ifcElements
-    const ifcList: IfcElementGeom[] = activePlan?.ifcElements ?? [];
-    if (ifcList.length > 0) {
-      let minX = Infinity;
-      let maxX = -Infinity;
-      let minY = Infinity;
-      let maxY = -Infinity;
-      for (const el of ifcList) {
-        minX = Math.min(minX, el.xM);
-        maxX = Math.max(maxX, el.xM + el.widthM);
-        minY = Math.min(minY, el.yM);
-        maxY = Math.max(maxY, el.yM + el.depthM);
-      }
-      const cx = (minX + maxX) / 2;
-      const cy = (minY + maxY) / 2;
-
-      for (const el of ifcList) {
-        if (visibleLayerNames.size > 0 && !visibleLayerNames.has(el.level)) continue;
-        const w = Math.max(0.08, el.widthM);
-        const d = Math.max(0.08, el.depthM);
-        const h = Math.max(0.08, el.heightM);
-        const geom = new THREE.BoxGeometry(w, h, d);
-        const mat = new THREE.MeshStandardMaterial({
-          color: el.color || '#2563eb',
-          transparent: xrayMode || el.ifcClass === 'IfcWindow' || el.ifcClass === 'IfcSpace',
-          opacity: el.ifcClass === 'IfcWindow' ? 0.45 : xrayMode ? 0.55 : 0.88,
-          roughness: 0.55,
-          metalness: 0.08,
-        });
-        const mesh = new THREE.Mesh(geom, mat);
-        mesh.position.set(el.xM - cx + w / 2, el.zM + h / 2, el.yM - cy + d / 2);
-        mesh.userData = {
-          kind: 'ifc',
-          shapeId: shapes.find((s) => s.name === el.name || s.ifcLevel === el.level && s.name.includes(el.name))?.id ?? null,
-          label: `${el.ifcClass}: ${el.name} [${el.level}] · ${formatNumber(el.areaM2)} m² · ${formatNumber(el.volumeM3)} m³`,
-        };
-        const edges = new THREE.EdgesGeometry(geom);
-        const line = new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color: '#0f172a', transparent: true, opacity: 0.25 }));
-        mesh.add(line);
-        group.add(mesh);
-        pickables.push(mesh);
-      }
+    const isBim = activePlan?.kind === 'IFC';
+    const linkedShapes = new Map(shapes.filter((shape) => shape.ifcElementId).map((shape) => [shape.ifcElementId, shape]));
+    const selectedElement = linkedShapes.size && [...linkedShapes.values()].find((shape) => shape.id === selectedShapeId)?.ifcElementId;
+    for (const el of activePlan?.ifcElements ?? []) {
+      if (!el.vertices?.length || !el.indices?.length) continue;
+      if (activePlan?.layers.some((layer) => layer.name === el.level) && !visibleLayerNames.has(el.level)) continue;
+      if (isolateSelected && selectedElement && el.id !== selectedElement) continue;
+      const shape = linkedShapes.get(el.id);
+      if (shape?.hidden) continue;
+      const selected = shape?.id === selectedShapeId;
+      const glass = el.ifcClass.startsWith('IfcWindow');
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.Float32BufferAttribute(el.vertices, 3));
+      geometry.setIndex(el.indices);
+      geometry.computeVertexNormals();
+      const material = new THREE.MeshStandardMaterial({
+        color: selected ? '#f59e0b' : el.color,
+        side: THREE.DoubleSide,
+        transparent: !selected && (xrayMode || glass),
+        opacity: selected ? 1 : glass ? 0.5 : xrayMode ? 0.48 : 1,
+        roughness: 0.66,
+      });
+      const mesh = new THREE.Mesh(geometry, material);
+      mesh.userData = {
+        shapeId: shape?.id,
+        label: `${el.ifcClass} · ${el.name} · ${el.level} · ${formatNumber(el.areaM2)} m²`,
+      };
+      group.add(mesh);
+      pickables.push(mesh);
     }
 
     // 2. Render 2D TakeoffShapes extruded into 3D space
@@ -227,7 +249,7 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
       z: (pt.y - sheetCenterY) / scaleRatio,
     });
 
-    for (const shp of renderShapes) {
+    for (const shp of isBim ? [] : renderShapes) {
       if (shp.hidden || shp.points.length === 0) continue;
       const isSelected = shp.id === selectedShapeId;
       const baseColor = new THREE.Color(isSelected ? '#f59e0b' : shp.color);
@@ -325,6 +347,11 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
       }
     }
 
+    if (activePlan?.id !== fittedPlanRef.current) {
+      fittedPlanRef.current = activePlan?.id;
+      fitCameraRef.current?.();
+    }
+
     return () => {
       group.traverse((object) => {
         if (object instanceof THREE.Mesh || object instanceof THREE.LineSegments) {
@@ -339,11 +366,14 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
 
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+      {activePlan?.kind === 'IFC' && !activePlan.ifcElements?.some((element) => element.vertices?.length) && (
+        <div className="viewport-render-error" role="status">Reimport the IFC file to view the model’s 3D geometry.</div>
+      )}
       <div ref={mountRef} style={{ width: '100%', height: '100%' }} />
       <div
         style={{
           position: 'absolute',
-          top: 44,
+          top: 74,
           left: 10,
           display: 'flex',
           gap: 6,
@@ -353,7 +383,7 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
         <button
           className="vp-tool-btn"
           style={{ background: '#ffffffea', border: '1px solid var(--border-main)' }}
-          onClick={() => controlsResetRef.current?.()}
+          onClick={() => resetCameraRef.current?.()}
         >
           Reset Camera
         </button>
@@ -369,7 +399,7 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
         <div
           style={{
             position: 'absolute',
-            bottom: 34,
+            bottom: 68,
             left: 10,
             background: 'rgba(15, 23, 42, 0.9)',
             color: '#fff',

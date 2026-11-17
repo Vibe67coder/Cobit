@@ -48,6 +48,7 @@ export const IfcImportModal: React.FC<IfcImportModalProps> = ({
   const [generateRows, setGenerateRows] = useState(true);
   const [groupByLevel, setGroupByLevel] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
 
   const loadParsed = (res: ImportedIfcResponse) => {
     setParsed(res);
@@ -62,7 +63,13 @@ export const IfcImportModal: React.FC<IfcImportModalProps> = ({
   };
 
   const handleFileChange = async (file: File | null) => {
-    if (!file) return;
+    if (!file || busy) return;
+    setParsed(null);
+    setError('');
+    if (!/\.ifc$/i.test(file.name)) {
+      setError('Export the Revit model to IFC first, then choose the .ifc file.');
+      return;
+    }
     setBusy(true);
     try {
       const res = await importIfcFile(file);
@@ -71,13 +78,15 @@ export const IfcImportModal: React.FC<IfcImportModalProps> = ({
         `Parsed IFC BIM "${res.name}" (${res.ifcElements.length} elements across ${res.levels.length} storey(s)).`
       );
     } catch (err) {
-      onNotify(`IFC import error: ${err instanceof Error ? err.message : String(err)}`);
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
     }
   };
 
   const handleLoadSample = async () => {
+    setParsed(null);
+    setError('');
     setBusy(true);
     try {
       const res = await loadSampleIfc();
@@ -86,7 +95,7 @@ export const IfcImportModal: React.FC<IfcImportModalProps> = ({
         `Loaded sample 2-storey IFC BIM "${res.name}" (${res.ifcElements.length} 3D BIM elements).`
       );
     } catch (err) {
-      onNotify(`Sample IFC error: ${err instanceof Error ? err.message : String(err)}`);
+      setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
     }
@@ -144,19 +153,6 @@ export const IfcImportModal: React.FC<IfcImportModalProps> = ({
         rateRows: [],
       });
 
-      // Compute normalized canvas footprint coordinates for linked 2D/3D shapes
-      let minX = Infinity;
-      let maxX = -Infinity;
-      let minY = Infinity;
-      let maxY = -Infinity;
-      for (const el of parsed.ifcElements) {
-        minX = Math.min(minX, el.xM);
-        maxX = Math.max(maxX, el.xM + el.widthM);
-        minY = Math.min(minY, el.yM);
-        maxY = Math.max(maxY, el.yM + el.depthM);
-      }
-      const scalePx = parsed.scaleRatio || 28;
-
       const buckets = new Map<string, typeof parsed.ifcElements>();
       for (const el of parsed.ifcElements) {
         const rule = ruleMap.get(el.ifcClass);
@@ -205,11 +201,6 @@ export const IfcImportModal: React.FC<IfcImportModalProps> = ({
         let totalQty = 0;
 
         for (const el of els) {
-          const sx = 80 + (el.xM - (Number.isFinite(minX) ? minX : 0)) * scalePx;
-          const sy = 70 + (el.yM - (Number.isFinite(minY) ? minY : 0)) * scalePx;
-          const sw = Math.max(6, el.widthM * scalePx);
-          const sd = Math.max(6, el.depthM * scalePx);
-
           const shapeId = `shp-bim-${Date.now()}-${existingShapesCount + newShapes.length}`;
           newShapes.push({
             id: shapeId,
@@ -218,13 +209,9 @@ export const IfcImportModal: React.FC<IfcImportModalProps> = ({
             itemId,
             resultType: rule.resultType,
             color: el.color,
-            points: [
-              { x: sx, y: sy },
-              { x: sx + sw, y: sy },
-              { x: sx + sw, y: sy + sd },
-              { x: sx, y: sy + sd },
-            ],
-            closed: true,
+            points: el.footprint ?? [],
+            closed: (el.footprint?.length ?? 0) >= 3,
+            ifcElementId: el.id,
             heightMm: Math.round(el.heightM * 1000),
             depthMm: Math.round(el.heightM * 1000),
             ifcLevel: el.level,
@@ -263,8 +250,8 @@ export const IfcImportModal: React.FC<IfcImportModalProps> = ({
           quantity: Number(totalQty.toFixed(2)),
           unit: rule.unit,
           factor: 1,
-          rate: first.ifcClass.includes('Slab') ? 145 : first.ifcClass.includes('Wall') ? 195 : 85,
-          markupPct: 10,
+          rate: 0,
+          markupPct: 0,
           pricingMode: 'INCL',
           groupingCode: first.ifcClass.toUpperCase(),
           calcRows,
@@ -293,12 +280,14 @@ export const IfcImportModal: React.FC<IfcImportModalProps> = ({
         </div>
 
         <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {error && <p className="drawing-import-error" role="alert">{error}</p>}
           <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
             <label className="btn-secondary" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
-              <Upload size={13} color="var(--brand-blue)" /> Choose .IFC File (IFC2X3 / IFC4)
+              <Upload size={13} color="var(--brand-blue)" /> Choose IFC Model
               <input
                 type="file"
-                accept=".ifc"
+                accept=".ifc,.rvt"
+                disabled={busy}
                 style={{ display: 'none' }}
                 onChange={(e) => handleFileChange(e.target.files?.[0] ?? null)}
               />
@@ -323,7 +312,7 @@ export const IfcImportModal: React.FC<IfcImportModalProps> = ({
                     checked={generateRows}
                     onChange={(e) => setGenerateRows(e.target.checked)}
                   />
-                  Generate Estimate Trade &amp; Items + Linked Takeoff Shapes
+                  Generate estimate rows from model geometry (rates start at zero)
                 </label>
                 <label className="form-checkbox-row" style={{ fontSize: 11.5 }}>
                   <input

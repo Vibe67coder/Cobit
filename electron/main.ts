@@ -8,7 +8,11 @@ let dualViewportWindow: BrowserWindow | null = null;
 let engineProcess: ChildProcess | null = null;
 
 const ENGINE_PORT = Number(process.env.COBITX_ENGINE_PORT || 47820);
-const ENGINE_URL = `http://127.0.0.1:${ENGINE_PORT}`;
+let engineReady: Promise<string> | null = null;
+
+if (process.env.COBITX_USER_DATA_DIR) {
+  app.setPath('userData', process.env.COBITX_USER_DATA_DIR);
+}
 const isDev = !app.isPackaged;
 
 function resolvePythonSidecar(): { cmd: string; args: string[]; cwd: string } {
@@ -18,10 +22,11 @@ function resolvePythonSidecar(): { cmd: string; args: string[]; cwd: string } {
     if (fs.existsSync(bundledExe)) {
       return {
         cmd: bundledExe,
-        args: ['--port', String(ENGINE_PORT)],
+        args: ['--desktop-engine', '--port', String(ENGINE_PORT)],
         cwd: path.dirname(bundledExe),
       };
     }
+    throw new Error('The bundled CobitX engine is missing.');
   }
 
   const rootDir = path.resolve(__dirname, '..');
@@ -37,37 +42,73 @@ function resolvePythonSidecar(): { cmd: string; args: string[]; cwd: string } {
 
   return {
     cmd: pythonBin,
-    args: [path.join(rootDir, 'engine', 'main.py'), '--port', String(ENGINE_PORT)],
+    args: [path.join(rootDir, 'engine', 'main.py'), '--desktop-engine', '--port', String(ENGINE_PORT)],
     cwd: rootDir,
   };
 }
 
-function startPythonEngine(): void {
-  if (engineProcess) return;
-  const spec = resolvePythonSidecar();
-  const dataDir = path.join(app.getPath('userData'), 'cobitx-data');
-  fs.mkdirSync(dataDir, { recursive: true });
+function startPythonEngine(): Promise<string> {
+  if (engineReady) return engineReady;
+  engineReady = new Promise<string>((resolve, reject) => {
+    const spec = resolvePythonSidecar();
+    const dataDir = path.join(app.getPath('userData'), 'cobitx-data');
+    const ifcRuntime = app.isPackaged ? {
+      COBITX_IFC_NODE: process.execPath,
+      COBITX_IFC_SCRIPT: path.join(process.resourcesPath, 'ifc', 'ifc_geometry.cjs'),
+    } : {};
+    fs.mkdirSync(dataDir, { recursive: true });
 
-  engineProcess = spawn(spec.cmd, spec.args, {
-    cwd: spec.cwd,
-    env: {
-      ...process.env,
-      COBITX_DATA_DIR: dataDir,
-      COBITX_ENGINE_PORT: String(ENGINE_PORT),
-    },
-    stdio: ['ignore', 'pipe', 'pipe'],
+    const child = spawn(spec.cmd, spec.args, {
+      cwd: spec.cwd,
+      env: { ...process.env, ...ifcRuntime, COBITX_DATA_DIR: dataDir },
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+    engineProcess = child;
+    const timeout = setTimeout(() => {
+      child.kill();
+      reject(new Error('The local CobitX engine took too long to start.'));
+    }, 55_000);
+    let output = '';
+    let connecting = false;
+    child.stdout?.setEncoding('utf8');
+    child.stdout?.on('data', async (data: string) => {
+      output = (output + data).slice(-8192);
+      const port = output.match(/COBITX_ENGINE_PORT=(\d+)\r?\n/)?.[1];
+      if (!port || connecting) return;
+      connecting = true;
+      const url = `http://127.0.0.1:${port}`;
+      for (let attempt = 0; attempt < 75 && engineProcess === child; attempt++) {
+        try {
+          const response = await fetch(`${url}/health`, { signal: AbortSignal.timeout(900) });
+          const health = await response.json() as { drawingImportApi?: number };
+          if (response.ok && health.drawingImportApi === 2) {
+            clearTimeout(timeout);
+            resolve(url);
+            return;
+          }
+        } catch {
+          // The child has bound the port but its HTTP startup can still be in progress.
+        }
+        await new Promise((ready) => setTimeout(ready, 200));
+      }
+      clearTimeout(timeout);
+      child.kill();
+      reject(new Error('The local engine did not finish starting.'));
+    });
+    child.stderr?.on('data', (d) => console.error(`[CobitX Engine] ${d.toString().trim()}`));
+    child.once('error', (error) => { clearTimeout(timeout); reject(error); });
+    child.once('exit', (code) => {
+      clearTimeout(timeout);
+      if (engineProcess === child) {
+        engineProcess = null;
+        engineReady = null;
+      }
+      reject(new Error(`The local CobitX engine stopped (exit ${code}).`));
+    });
   });
-
-  engineProcess.stdout?.on('data', (d) => {
-    console.log(`[CobitX Engine] ${d.toString().trim()}`);
-  });
-  engineProcess.stderr?.on('data', (d) => {
-    console.error(`[CobitX Engine] ${d.toString().trim()}`);
-  });
-  engineProcess.on('exit', (code) => {
-    console.log(`[CobitX Engine] exited with code ${code}`);
-    engineProcess = null;
-  });
+  engineReady.catch((error) => console.error('[CobitX Engine]', error.message));
+  return engineReady;
 }
 
 function stopPythonEngine(): void {
@@ -78,6 +119,7 @@ function stopPythonEngine(): void {
     // Ignore cleanup errors
   }
   engineProcess = null;
+  engineReady = null;
 }
 
 function createMainWindow(): void {
@@ -112,11 +154,11 @@ function createMainWindow(): void {
 }
 
 function registerIpcHandlers(): void {
-  ipcMain.handle('cobitx:get-env', () => ({
+  ipcMain.handle('cobitx:get-env', async () => ({
     isDesktop: true,
     platform: process.platform,
     version: app.getVersion(),
-    engineUrl: ENGINE_URL,
+    engineUrl: await startPythonEngine(),
     userDataDir: app.getPath('userData'),
   }));
 
