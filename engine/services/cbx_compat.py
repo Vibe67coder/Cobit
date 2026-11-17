@@ -8,7 +8,10 @@ import json
 import time
 import xml.etree.ElementTree as ET
 import zipfile
+from collections.abc import Iterable, Iterator, Sequence
+from math import isfinite
 from typing import Any
+from uuid import uuid4
 
 
 def _safe_float(val: Any, default: float = 0.0) -> float:
@@ -85,14 +88,13 @@ def export_cbx_archive(job: dict[str, Any]) -> bytes:
 
 
 def _normalize_imported_job(raw_job: dict[str, Any], filename: str, kind_override: str | None = None) -> dict[str, Any]:
-    ts = int(time.time() * 1000)
     ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
     inferred_kind = kind_override or (
         "PriceList" if ext == "plx" or raw_job.get("kind") == "PriceList" else "Job"
     )
     base_name = str(raw_job.get("name") or filename.rsplit(".", 1)[0] or "Imported Job")
     return {
-        "id": f"{'pl' if inferred_kind == 'PriceList' else 'job'}-imp-{ts}",
+        "id": f"{'pl' if inferred_kind == 'PriceList' else 'job'}-imp-{uuid4().hex}",
         "kind": inferred_kind,
         "projectId": raw_job.get("projectId"),
         "folderId": None,
@@ -372,7 +374,7 @@ def import_pricelist_spreadsheet(filename: str, raw_bytes: bytes) -> dict[str, A
     col_unit = _find_col("unit", "uom")
     col_rate = _find_col("rate", "unitrate", "price", "cost")
     col_markup = _find_col("markup", "markuppct", "markup%")
-    col_heading = _find_col("headingrefcode", "headingref", "headingcode", "parentcode", "section", "trade")
+    col_heading = _find_col("headingrefcode", "headingref", "headingcode", "parentcode", "section", "trade", "rategroup")
     col_type = _find_col("type", "rowtype")
 
     # If first row does not look like a header row, fall back to positional columns
@@ -563,4 +565,97 @@ def import_pricelist_spreadsheet(filename: str, raw_bytes: bytes) -> dict[str, A
         filename,
         kind_override="PriceList",
     )
+
+
+
+def import_costx_estimate(filename: str, raw_bytes: bytes) -> dict[str, Any]:
+    """Import a tabular CostX estimate or dimension-group summary as saved values."""
+    def find_table(sheets: Iterable[Iterator[Sequence[Any]]]):
+        for sheet in sheets:
+            for row_number, row in enumerate(sheet, 1):
+                headers = {_norm_header(value): index for index, value in enumerate(row)}
+                description = next((headers[key] for key in ("description", "itemdescription", "dimensiongroup") if key in headers), None)
+                quantity = next((headers[key] for key in ("quantity", "qty") if key in headers), None)
+                if description is not None and quantity is not None:
+                    return sheet, row_number, headers, description, quantity
+        raise ValueError("An estimate table must contain Description (or Dimension Group) and Quantity columns.")
+
+    def number(value: str, row_number: int, field: str, default: float = 0.0) -> float:
+        if not value:
+            return default
+        cleaned = value.replace(",", "").removeprefix("AUD").strip().removeprefix("$").strip()
+        if cleaned.startswith("(") and cleaned.endswith(")"):
+            cleaned = "-" + cleaned[1:-1].removeprefix("$")
+        try:
+            result = float(cleaned)
+            if isfinite(result):
+                return result
+        except ValueError:
+            pass
+        raise ValueError(f"Row {row_number} has an invalid {field}: {value!r}.")
+
+    def read(sheets: Iterable[Iterator[Sequence[Any]]]) -> list[dict[str, Any]]:
+        table, start, headers, description, quantity = find_table(sheets)
+
+        def column(*names: str) -> int | None:
+            return next((headers[name] for name in names if name in headers), None)
+
+        code = column("code", "itemcode", "refcode", "reference")
+        group = column("trade", "section", "folder", "rategroup")
+        unit = column("unit", "uom", "unitofmeasure")
+        rate = column("rate", "unitrate", "price")
+        factor = column("factor")
+        row_type = column("type", "rowtype")
+        trades: dict[str, list[dict[str, Any]]] = {}
+        for row_number, row in enumerate(table, start + 1):
+            def cell(index: int | None) -> str:
+                return "" if index is None or index >= len(row) or row[index] is None else str(row[index]).strip()
+
+            name, qty, unit_rate, units = cell(description), cell(quantity), cell(rate), cell(unit)
+            if not name:
+                continue
+            kind = cell(row_type).casefold()
+            if kind in ("total", "subtotal") or name.casefold() in ("total", "grand total", "subtotal", "sub-total"):
+                continue
+            trade = cell(group) or "Imported Estimate"
+            if not qty and not unit_rate and not units:
+                continue
+            if trade not in trades:
+                index = len(trades) + 1
+                trades[trade] = [{
+                    "id": f"tr-costx-{index}", "parentId": None, "rowType": "Trade", "code": f"{index:02d}",
+                    "description": trade, "quantity": 0, "unit": "", "factor": 1,
+                    "rate": 0, "markupPct": 0, "pricingMode": "INCL", "calcRows": [], "rateRows": [],
+                }]
+            item_code = cell(code) or f"I{row_number}"
+            result = {
+                "m": "Length", "lm": "Length", "m2": "Area", "m²": "Area", "m3": "Volume", "m³": "Volume",
+            }.get(units.casefold(), "Count")
+            trades[trade].append({
+                "id": f"it-costx-{row_number}", "parentId": trades[trade][0]["id"], "rowType": "Item",
+                "code": item_code, "refCode": item_code, "description": name,
+                "resultType": result, "quantity": number(qty, row_number, "quantity"), "unit": units,
+                "conversion": 1, "numberMultiplier": 1, "factor": number(cell(factor), row_number, "factor", 1),
+                "wastagePct": 0, "rate": number(unit_rate, row_number, "rate"), "markupPct": 0,
+                "pricingMode": "INCL", "calcRows": [], "rateRows": [],
+            })
+        if not trades:
+            raise ValueError("No estimate or dimension rows were found.")
+        return [row for trade_rows in trades.values() for row in trade_rows]
+
+    suffix = filename.lower().rsplit(".", 1)[-1]
+    if suffix == "xlsx":
+        import openpyxl
+
+        book = openpyxl.load_workbook(io.BytesIO(raw_bytes), read_only=True, data_only=True)
+        try:
+            sheets = [book.active, *(sheet for sheet in book.worksheets if sheet != book.active)]
+            rows = read(sheet.iter_rows(values_only=True) for sheet in sheets)
+        finally:
+            book.close()
+    elif suffix == "csv":
+        rows = read([csv.reader(io.StringIO(raw_bytes.decode("utf-8-sig")))])
+    else:
+        raise ValueError("Use a CostX Excel (.xlsx) or CSV export.")
+    return _normalize_imported_job({"rows": rows, "markupPct": 0, "salesTaxPct": 0}, filename, "Job")
 

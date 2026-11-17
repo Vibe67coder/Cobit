@@ -204,22 +204,42 @@ export interface UploadedPlanResponse {
   layers: { id: string; name: string; visible: boolean; color: string }[];
 }
 
+export interface PdfPagePreview {
+  number: number;
+  thumbnail: string;
+}
+
+async function postPlanFile<T>(endpoint: string, data: FormData): Promise<T> {
+  const base = await getBaseUrl();
+  const res = await fetch(`${base}/api/plans/${endpoint}`, { method: 'POST', body: data });
+  if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    throw new Error(typeof body?.detail === 'string' ? body.detail : `Drawing request failed (${res.status}).`);
+  }
+  return res.json() as Promise<T>;
+}
+
+export async function previewPdfPages(file: File): Promise<PdfPagePreview[]> {
+  const data = new FormData();
+  data.append('file', file);
+  return (await postPlanFile<{ pages: PdfPagePreview[] }>('pdf-preview', data)).pages;
+}
+
+export async function uploadPdfPages(file: File, pages: number[]): Promise<UploadedPlanResponse[]> {
+  const data = new FormData();
+  data.append('file', file);
+  for (const page of pages) data.append('page_numbers', String(page));
+  return (await postPlanFile<{ plans: UploadedPlanResponse[] }>('upload-pages', data)).plans;
+}
+
 export async function uploadPlanFile(
   file: File,
   pageNumber = 1
 ): Promise<UploadedPlanResponse> {
-  const base = await getBaseUrl();
   const fd = new FormData();
   fd.append('file', file);
   fd.append('page_number', String(pageNumber));
-  const res = await fetch(`${base}/api/plans/upload`, {
-    method: 'POST',
-    body: fd,
-  });
-  if (!res.ok) {
-    throw new Error(await res.text());
-  }
-  return (await res.json()) as UploadedPlanResponse;
+  return postPlanFile<UploadedPlanResponse>('upload', fd);
 }
 
 export async function autoSelectPolygon(
@@ -388,16 +408,18 @@ export async function importLegacyArchive(
   return data.job;
 }
 
-export async function importPriceListSpreadsheet(file: File): Promise<JobRecord> {
+export async function importEstimateSpreadsheet(file: File, kind: 'Job' | 'PriceList'): Promise<JobRecord> {
   const base = await getBaseUrl();
   const fd = new FormData();
   fd.append('file', file);
-  const res = await fetch(`${base}/api/import/pricelist-excel`, {
+  const endpoint = kind === 'Job' ? 'costx-estimate' : 'pricelist-excel';
+  const res = await fetch(`${base}/api/import/${endpoint}`, {
     method: 'POST',
     body: fd,
   });
   if (!res.ok) {
-    throw new Error(await res.text());
+    const body = await res.json().catch(() => null);
+    throw new Error(typeof body?.detail === 'string' ? body.detail : `Spreadsheet import failed (${res.status}).`);
   }
   const data = (await res.json()) as { job: JobRecord };
   return data.job;

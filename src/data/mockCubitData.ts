@@ -54,41 +54,7 @@ export const INITIAL_OPTIONS: CubitOptionsState = {
   mcpServerEnabled: true,
   mcpServerPort: 47821,
   mcpServerTransport: 'http',
-  mcpConnections: [
-    {
-      id: 'mcp-1',
-      name: 'Rawlinsons / Regional Cost Book MCP',
-      transport: 'http',
-      endpointOrCommand: 'http://localhost:48010/mcp',
-      category: 'CostLibrary',
-      enabled: true,
-      status: 'Ready',
-      toolsCount: 6,
-      resourcesCount: 14,
-    },
-    {
-      id: 'mcp-2',
-      name: 'Live Supplier & Trade Pricing MCP',
-      transport: 'http',
-      endpointOrCommand: 'https://pricing.suppliers.local/mcp',
-      category: 'SupplierPricing',
-      enabled: true,
-      status: 'Connected',
-      toolsCount: 4,
-      resourcesCount: 8,
-    },
-    {
-      id: 'mcp-3',
-      name: 'Xero Chart of Accounts & PO MCP',
-      transport: 'stdio',
-      endpointOrCommand: 'npx @cobitx/mcp-xero-connector --org default',
-      category: 'Accounting',
-      enabled: false,
-      status: 'Disconnected',
-      toolsCount: 5,
-      resourcesCount: 3,
-    },
-  ],
+  mcpConnections: [],
 };
 
 export const INITIAL_COMPANIES: ClientCompany[] = [
@@ -281,7 +247,7 @@ export const INITIAL_JOBS: JobRecord[] = [
       },
       {
         id: 'eref-2',
-        sourceName: 'Live Supplier & Trade Pricing MCP',
+        sourceName: 'Sample supplier rate',
         sourceKind: 'MCP',
         refKey: 'mcp://suppliers/metro-masonry/brick-3000',
         targetItemId: 'item-ext-wall',

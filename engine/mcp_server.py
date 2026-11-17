@@ -756,7 +756,20 @@ async def probe_external_mcp(transport: str, endpoint_or_command: str) -> dict[s
             )
             tools_count = 0
             resources_count = 0
-            if resp.status_code < 400:
+            init_response = {}
+            if resp.is_success:
+                try:
+                    payload = resp.json()
+                    if isinstance(payload, dict) and payload.get("jsonrpc") == "2.0" and payload.get("id") == 1 and "error" not in payload:
+                        init_response = payload.get("result") or {}
+                except ValueError:
+                    pass
+            is_mcp = (
+                isinstance(init_response, dict)
+                and isinstance(init_response.get("protocolVersion"), str)
+                and isinstance(init_response.get("capabilities"), dict)
+            )
+            if is_mcp:
                 try:
                     t_resp = await client.post(
                         url,
@@ -784,12 +797,15 @@ async def probe_external_mcp(transport: str, endpoint_or_command: str) -> dict[s
 
             latency_ms = round((time.perf_counter() - t0) * 1000, 1)
             return {
-                "ok": resp.status_code < 500,
-                "status": "Connected" if resp.status_code < 400 else "Ready",
+                "ok": is_mcp,
+                "status": "Connected" if is_mcp else "Disconnected",
                 "latencyMs": latency_ms,
                 "toolsCount": tools_count,
                 "resourcesCount": resources_count,
-                "detail": f"HTTP {resp.status_code} response from MCP endpoint ({tools_count} tools, {resources_count} resources)",
+                "detail": (
+                    f"MCP handshake verified ({tools_count} tools, {resources_count} resources)"
+                    if is_mcp else f"HTTP {resp.status_code}: no valid MCP initialize response"
+                ),
             }
     except Exception as exc:
         latency_ms = round((time.perf_counter() - t0) * 1000, 1)

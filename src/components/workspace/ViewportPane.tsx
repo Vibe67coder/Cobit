@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useEffectEvent, useMemo, useRef, useState } from 'react';
 import {
   Crosshair,
   Search,
@@ -336,13 +336,28 @@ export const ViewportPane: React.FC<ViewportPaneProps> = ({
     }
   };
 
-  const handleWheel = (e: React.WheelEvent<SVGSVGElement>) => {
-    if (viewMode === '3D') return;
-    e.preventDefault();
-    const factor = e.deltaY < 0 ? 1.12 : 0.89;
+  const zoomAt = (factor: number, x: number, y: number) => {
     const nextZoom = Math.max(0.35, Math.min(5, zoom * factor));
+    const ratio = nextZoom / zoom;
     onChangeZoom(nextZoom);
+    onChangePan({ x: x - (x - pan.x) * ratio, y: y - (y - pan.y) * ratio });
   };
+
+  const handleWheel = useEffectEvent((event: WheelEvent, svg: SVGSVGElement) => {
+    if (!event.deltaY) return;
+    event.preventDefault();
+    const rect = svg.getBoundingClientRect();
+    const factor = event.deltaY < 0 ? 1.12 : 1 / 1.12;
+    zoomAt(factor, event.clientX - rect.left, event.clientY - rect.top);
+  });
+
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    const wheel = (event: WheelEvent) => handleWheel(event, svg);
+    svg.addEventListener('wheel', wheel, { passive: false });
+    return () => svg.removeEventListener('wheel', wheel);
+  }, [viewMode]);
 
   const handleZoomFit = () => {
     onChangeZoom(1);
@@ -394,7 +409,11 @@ export const ViewportPane: React.FC<ViewportPaneProps> = ({
           </button>
           <button
             className="vp-tool-btn"
-            onClick={() => onChangeZoom(Math.min(4, zoom * 1.2))}
+            onClick={() => {
+              const rect = svgRef.current?.getBoundingClientRect();
+              if (rect) zoomAt(1.2, rect.width / 2, rect.height / 2);
+            }}
+            disabled={viewMode === '3D'}
             title="Zoom In"
           >
             <ZoomIn size={13} /> Zoom
@@ -602,7 +621,6 @@ export const ViewportPane: React.FC<ViewportPaneProps> = ({
           onMouseMove={handleMouseMove}
           onMouseDown={handleMouseDown}
           onMouseUp={handleMouseUp}
-          onWheel={handleWheel}
           onContextMenu={(e) => e.preventDefault()}
         >
             <g transform={`translate(${pan.x}, ${pan.y}) scale(${zoom})`}>

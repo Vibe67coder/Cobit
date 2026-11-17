@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Play, Plus, Plug, RefreshCw, Trash2, X } from 'lucide-react';
+import { Play, Plus, RefreshCw, Trash2, X } from 'lucide-react';
 import type {
   CubitOptionsState,
   ImperialDisplayMode,
@@ -21,6 +21,14 @@ interface OptionsModalProps {
   onClose: () => void;
 }
 
+const demoEndpoints = new Map([
+  ['mcp-1', 'http://localhost:48010/mcp'],
+  ['mcp-2', 'https://pricing.suppliers.local/mcp'],
+  ['mcp-3', 'npx @cobitx/mcp-xero-connector --org default'],
+]);
+
+type Probe = Awaited<ReturnType<typeof probeMcpConnection>>;
+
 type OptionTab = 'General' | 'Interface' | 'Viewport' | 'Dimensions' | 'Reports' | 'AI' | 'MCP';
 
 export const OptionsModal: React.FC<OptionsModalProps> = ({
@@ -39,6 +47,8 @@ export const OptionsModal: React.FC<OptionsModalProps> = ({
   const [selectedMcpTool, setSelectedMcpTool] = useState('cobitx_list_jobs');
   const [mcpToolArgsJson, setMcpToolArgsJson] = useState('{}');
   const [mcpOutput, setMcpOutput] = useState<string>('');
+  const [probeResults, setProbeResults] = useState<Record<string, Probe>>({});
+  const [testingId, setTestingId] = useState<string | null>(null);
   const [probeMessage, setProbeMessage] = useState<string>('');
 
   useEffect(() => {
@@ -55,25 +65,20 @@ export const OptionsModal: React.FC<OptionsModalProps> = ({
   }, [tab, mcpManifest, engineHealth]);
 
   const handleTestMcpServer = async (m: McpServerConfig) => {
-    setProbeMessage(`Testing ${m.name}...`);
+    setTestingId(m.id);
+    setProbeMessage(`Testing ${m.name}…`);
     try {
-      const res = await probeMcpConnection(m.transport, m.endpointOrCommand);
-      setDraft((prev) => ({
-        ...prev,
-        mcpConnections: prev.mcpConnections.map((x) =>
-          x.id === m.id
-            ? {
-                ...x,
-                status: res.status,
-                toolsCount: res.toolsCount ?? x.toolsCount,
-                resourcesCount: res.resourcesCount ?? x.resourcesCount,
-              }
-            : x
-        ),
+      const result = await probeMcpConnection(m.transport, m.endpointOrCommand);
+      setProbeResults((previous) => ({ ...previous, [m.id]: result }));
+      setProbeMessage(`${m.name} (${result.latencyMs} ms). ${result.detail}`);
+    } catch (error) {
+      setProbeResults((previous) => ({
+        ...previous,
+        [m.id]: { ok: false, status: 'Disconnected', latencyMs: 0, detail: String(error) },
       }));
-      setProbeMessage(`${m.name}: ${res.status} (${res.latencyMs}ms) — ${res.detail}`);
-    } catch (err) {
-      setProbeMessage(`Test failed: ${err instanceof Error ? err.message : String(err)}`);
+      setProbeMessage(`Test failed. ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setTestingId(null);
     }
   };
 
@@ -106,7 +111,7 @@ export const OptionsModal: React.FC<OptionsModalProps> = ({
       endpointOrCommand: newMcpEndpoint.trim(),
       category: newMcpCategory,
       enabled: true,
-      status: 'Ready',
+      status: 'Disconnected',
       toolsCount: 0,
       resourcesCount: 0,
     };
@@ -513,11 +518,16 @@ export const OptionsModal: React.FC<OptionsModalProps> = ({
                 </div>
               </fieldset>
 
-              <fieldset style={{ border: '1px solid var(--border-main)', padding: 10 }}>
+              <fieldset className="mcp-external-servers" style={{ border: '1px solid var(--border-main)', padding: 10 }}>
                 <legend style={{ fontWeight: 600, fontSize: 11, padding: '0 4px' }}>
-                  Connected External MCP Servers (Pricing Books, ERP, Xero, CDE)
+                  External MCP Servers
                 </legend>
-                <table className="cubit-table" style={{ marginBottom: 8 }}>
+                <p className="mcp-connection-note">
+                  Estimate prices come from saved rates, rate sheets, and imported price lists. External MCP tests check
+                  server access. They do not fetch prices or update estimates.
+                </p>
+                <div className="mcp-connections-table">
+                <table className="cubit-table">
                   <thead>
                     <tr>
                       <th>On</th>
@@ -531,75 +541,61 @@ export const OptionsModal: React.FC<OptionsModalProps> = ({
                     </tr>
                   </thead>
                   <tbody>
-                    {draft.mcpConnections.map((m) => (
-                      <tr key={m.id}>
-                        <td>
-                          <input
-                            type="checkbox"
-                            checked={m.enabled}
-                            onChange={() =>
-                              setDraft({
-                                ...draft,
-                                mcpConnections: draft.mcpConnections.map((x) =>
-                                  x.id === m.id
-                                    ? {
-                                        ...x,
-                                        enabled: !x.enabled,
-                                        status: !x.enabled ? 'Connected' : 'Disconnected',
-                                      }
-                                    : x
-                                ),
-                              })
-                            }
-                          />
-                        </td>
-                        <td style={{ fontWeight: 600 }}>{m.name}</td>
-                        <td>{m.category}</td>
-                        <td className="mono">{m.transport}</td>
-                        <td className="mono" style={{ fontSize: 10.5 }}>{m.endpointOrCommand}</td>
-                        <td className="num">
-                          <span className="status-badge status-open mono" title={`${m.toolsCount} tools, ${m.resourcesCount} resources`}>
-                            {m.toolsCount}
-                          </span>
-                        </td>
-                        <td>
-                          <span
-                            className={`status-badge ${
-                              m.status === 'Connected'
-                                ? 'status-won'
-                                : m.status === 'Ready'
-                                ? 'status-open'
-                                : 'status-locked'
-                            }`}
-                          >
-                            {m.status}
-                          </span>
-                        </td>
-                        <td style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
-                          <button
-                            className="pane-icon-btn"
-                            title="Test MCP Server Connection"
-                            onClick={() => handleTestMcpServer(m)}
-                          >
-                            <RefreshCw size={12} color="var(--brand-blue)" />
-                          </button>
-                          <button
-                            className="pane-icon-btn"
-                            title="Remove MCP Connection"
-                            onClick={() =>
-                              setDraft({
-                                ...draft,
-                                mcpConnections: draft.mcpConnections.filter((x) => x.id !== m.id),
-                              })
-                            }
-                          >
-                            <Trash2 size={12} color="var(--accent-red)" />
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
+                    {draft.mcpConnections.map((m) => {
+                      const sample = demoEndpoints.get(m.id) === m.endpointOrCommand;
+                      const result = probeResults[m.id];
+                      const status = sample ? 'Demo' : testingId === m.id ? 'Testing…' :
+                        !m.enabled ? 'Disabled' : !result ? 'Untested' : !result.ok ? 'Failed' :
+                        m.transport === 'stdio' ? 'Command found' : 'Verified';
+                      return (
+                        <tr key={m.id}>
+                          <td>
+                            <input
+                              type="checkbox"
+                              aria-label={`Enable ${m.name}`}
+                              checked={!sample && m.enabled}
+                              disabled={sample || testingId === m.id}
+                              onChange={() => {
+                                setProbeResults(({ [m.id]: _oldResult, ...previous }) => previous);
+                                setDraft((previous) => ({
+                                  ...previous,
+                                  mcpConnections: previous.mcpConnections.map((item) =>
+                                    item.id === m.id ? { ...item, enabled: !item.enabled } : item),
+                                }));
+                              }}
+                            />
+                          </td>
+                          <td title={m.name}>{m.name}</td>
+                          <td>{m.category}</td>
+                          <td className="mono">{m.transport}</td>
+                          <td className="mono" title={m.endpointOrCommand}>{m.endpointOrCommand}</td>
+                          <td className="num" title={result ? `${result.resourcesCount ?? 0} resources` : undefined}>
+                            {result?.ok && m.enabled && m.transport === 'http' ? result.toolsCount ?? '—' : '—'}
+                          </td>
+                          <td><span className={`status-badge ${status === 'Verified' ? 'status-won' : 'status-open'}`}>{status}</span></td>
+                          <td>
+                            <div className="mcp-connection-actions">
+                              <button className="pane-icon-btn" title="Test MCP Server Connection" aria-label={`Test ${m.name}`}
+                                disabled={sample || !m.enabled || testingId !== null} onClick={() => handleTestMcpServer(m)}>
+                                <RefreshCw size={12} color="var(--brand-blue)" />
+                              </button>
+                              <button className="pane-icon-btn" title="Remove MCP Connection" aria-label={`Remove ${m.name}`}
+                                disabled={testingId === m.id}
+                                onClick={() => setDraft((previous) => ({
+                                  ...previous,
+                                  mcpConnections: previous.mcpConnections.filter((item) => item.id !== m.id),
+                                }))}>
+                                <Trash2 size={12} color="var(--accent-red)" />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {!draft.mcpConnections.length && <tr><td colSpan={8}>No external servers configured.</td></tr>}
                   </tbody>
                 </table>
+                </div>
 
                 {probeMessage && (
                   <div
@@ -617,17 +613,20 @@ export const OptionsModal: React.FC<OptionsModalProps> = ({
                   </div>
                 )}
 
-                <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                  <Plug size={13} color="var(--brand-blue)" />
+                <form className="mcp-add-connection" onSubmit={(event) => {
+                  event.preventDefault();
+                  handleAddMcp();
+                }}>
                   <input
                     className="form-input"
-                    placeholder="Connection Name (e.g. Procore CDE)"
+                    placeholder="Connection name"
+                    aria-label="Connection name"
                     value={newMcpName}
                     onChange={(e) => setNewMcpName(e.target.value)}
                   />
                   <select
                     className="form-select"
-                    style={{ width: 115 }}
+                    aria-label="Server category"
                     value={newMcpCategory}
                     onChange={(e) =>
                       setNewMcpCategory(e.target.value as McpServerConfig['category'])
@@ -641,7 +640,7 @@ export const OptionsModal: React.FC<OptionsModalProps> = ({
                   </select>
                   <select
                     className="form-select"
-                    style={{ width: 78 }}
+                    aria-label="Server transport"
                     value={newMcpTransport}
                     onChange={(e) => setNewMcpTransport(e.target.value as 'http' | 'stdio')}
                   >
@@ -651,13 +650,14 @@ export const OptionsModal: React.FC<OptionsModalProps> = ({
                   <input
                     className="form-input mono"
                     placeholder="URL or stdio command"
+                    aria-label="URL or stdio command"
                     value={newMcpEndpoint}
                     onChange={(e) => setNewMcpEndpoint(e.target.value)}
                   />
-                  <button className="btn-secondary" onClick={handleAddMcp}>
+                  <button className="btn-secondary" disabled={!newMcpName.trim() || !newMcpEndpoint.trim()}>
                     <Plus size={12} /> Add
                   </button>
-                </div>
+                </form>
               </fieldset>
 
               <fieldset style={{ border: '1px solid var(--border-main)', padding: 10 }}>

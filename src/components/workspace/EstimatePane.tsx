@@ -36,6 +36,31 @@ import {
 } from '../../utils/estimateCalc';
 import { ColumnChooserModal, type ColumnDef } from '../modals/ColumnChooserModal';
 
+import { clickWorksheet, focusWorksheet, navigateWorksheet } from './worksheetKeyboard';
+
+function WorksheetInput({ value, onCommit, label, disabled }: {
+  value: string | number;
+  onCommit: (value: string) => void;
+  label: string;
+  disabled: boolean;
+}) {
+  if (disabled) return <>{value}</>;
+  return <input
+    key={String(value)}
+    aria-label={label}
+    className="inline-cell-input"
+    defaultValue={value}
+    onBlur={(event) => {
+      const input = event.currentTarget;
+      const next = input.value;
+      if (next !== input.defaultValue) {
+        input.value = input.defaultValue;
+        onCommit(next);
+      }
+    }}
+  />;
+}
+
 const ESTIMATE_ALL_COLUMNS: ColumnDef[] = [
   { key: 'lockedBy', label: 'Lock', width: 42 },
   { key: 'code', label: 'Code', width: 64 },
@@ -224,6 +249,7 @@ export const EstimatePane: React.FC<EstimatePaneProps> = ({
   }, [rows]);
 
   const selectedRow = rows.find((r) => r.id === selectedRowId) ?? null;
+  const lowerReadOnly = Boolean(isReadOnly || selectedRow?.lockedBy);
 
   const commitNumericOrFormula = (
     row: EstimateRow,
@@ -251,7 +277,7 @@ export const EstimatePane: React.FC<EstimatePaneProps> = ({
   };
 
   const handleAddManualCalcLine = () => {
-    if (!selectedRow || isReadOnly) return;
+    if (!selectedRow || lowerReadOnly) return;
     const nextLine: CalcRow = {
       id: `calc-${Date.now()}`,
       description: 'Manual Dimension Line',
@@ -271,7 +297,7 @@ export const EstimatePane: React.FC<EstimatePaneProps> = ({
   };
 
   const handleUpdateCalcLine = (calcId: string, patch: Partial<CalcRow>) => {
-    if (!selectedRow || isReadOnly) return;
+    if (!selectedRow || lowerReadOnly) return;
     const nextCalcs = selectedRow.calcRows.map((c) => {
       if (c.id !== calcId) return c;
       const merged = { ...c, ...patch };
@@ -290,7 +316,7 @@ export const EstimatePane: React.FC<EstimatePaneProps> = ({
   };
 
   const handleAddRateRow = () => {
-    if (!selectedRow || isReadOnly) return;
+    if (!selectedRow || lowerReadOnly) return;
     const nextRow: RateRow = {
       id: `rr-${Date.now()}`,
       code: `R${selectedRow.rateRows.length + 1}`,
@@ -312,7 +338,7 @@ export const EstimatePane: React.FC<EstimatePaneProps> = ({
   };
 
   const handleUpdateRateRow = (rateId: string, patch: Partial<RateRow>) => {
-    if (!selectedRow || isReadOnly) return;
+    if (!selectedRow || lowerReadOnly) return;
     const updated = selectedRow.rateRows.map((r) =>
       r.id === rateId ? { ...r, ...patch } : r
     );
@@ -324,7 +350,7 @@ export const EstimatePane: React.FC<EstimatePaneProps> = ({
   };
 
   const handleDeleteRateRow = (rateId: string) => {
-    if (!selectedRow || isReadOnly) return;
+    if (!selectedRow || lowerReadOnly) return;
     const remaining = selectedRow.rateRows.filter((r) => r.id !== rateId);
     const { computedRows, unitRate } = evaluateRateSheetRows(remaining);
     onUpdateRow(selectedRow.id, {
@@ -358,7 +384,7 @@ export const EstimatePane: React.FC<EstimatePaneProps> = ({
     >
       {/* UPPER SHEET: ESTIMATE / GROUPED VIEWS */}
       <div style={{ height: `${splitPct}%`, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-        <div className="pane-tabs-bar">
+        <div className="pane-tabs-bar worksheet-toolbar">
           <div className="pane-tabs-left">
             <button
               className={`pane-tab ${upperTab === 'Estimate' ? 'active' : ''}`}
@@ -375,9 +401,9 @@ export const EstimatePane: React.FC<EstimatePaneProps> = ({
               </button>
             )}
           </div>
-          <div style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>
-            Double-click cell to edit (=SUM/@Ref formulas supported) · Right-click header for Columns
-          </div>
+          <span className="worksheet-summary" title="Arrow keys to move • F2 to edit • Right-click a header to choose columns">
+            Arrows to move · F2 to edit
+          </span>
         </div>
 
         {/* Estimate Window Button Bar + Quick Options/Variations Bar */}
@@ -439,9 +465,24 @@ export const EstimatePane: React.FC<EstimatePaneProps> = ({
           )}
         </div>
 
-        <div className="estimate-grid-scroll">
+        <div
+          className="estimate-grid-scroll worksheet-grid"
+          tabIndex={0}
+          aria-label={isPriceList ? 'Price list worksheet' : 'Estimate worksheet'}
+          onFocus={(event) => focusWorksheet(event, onSelectRow)}
+          onClick={clickWorksheet}
+          onKeyDownCapture={(event) => navigateWorksheet(
+            event,
+            upperTab === 'Estimate' && !isReadOnly ? onInsertItem : undefined,
+            () => {
+              if (!editingCell) return false;
+              setEditingCell(null);
+              return true;
+            },
+          )}
+        >
           {upperTab === 'Estimate' ? (
-            <table className="cubit-table">
+            <table className="cubit-table" style={{ minWidth: activeColumns.reduce((width, column) => width + (column.width ?? 0), 0) }}>
               <thead>
                 <tr>
                   {activeColumns.map((col) => (
@@ -503,6 +544,7 @@ export const EstimatePane: React.FC<EstimatePaneProps> = ({
                   return (
                     <tr
                       key={row.id}
+                      data-worksheet-row={row.id}
                       className={rowCls}
                       onClick={() => onSelectRow(row.id)}
                     >
@@ -1059,6 +1101,7 @@ export const EstimatePane: React.FC<EstimatePaneProps> = ({
                     {g.items.map((item) => (
                       <tr
                         key={item.id}
+                        data-worksheet-row={item.id}
                         className={item.id === selectedRowId ? 'selected' : ''}
                         onClick={() => onSelectRow(item.id)}
                       >
@@ -1083,11 +1126,9 @@ export const EstimatePane: React.FC<EstimatePaneProps> = ({
 
       {/* LOWER SHEET: CALCULATION SHEET (F9) & RATE SHEET / DATASHEET */}
       <div
-        ref={calcSheetRef}
-        tabIndex={-1}
         style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, outline: 'none' }}
       >
-        <div className="pane-tabs-bar">
+        <div className="pane-tabs-bar worksheet-toolbar">
           <div className="pane-tabs-left">
             {!isPriceList && (
               <button
@@ -1104,16 +1145,16 @@ export const EstimatePane: React.FC<EstimatePaneProps> = ({
               Rate Sheet / Datasheet {selectedRow?.rateRows.length ? `(${selectedRow.rateRows.length})` : ''}
             </button>
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>
+          <div className="worksheet-toolbar-actions">
+            <span className="worksheet-summary" title={selectedRow?.description}>
               {selectedRow ? selectedRow.description : 'Select an Estimate Item'}
             </span>
-            {lowerTab === 'Calc' && selectedRow?.rowType === 'Item' && !isReadOnly && (
+            {lowerTab === 'Calc' && selectedRow?.rowType === 'Item' && !lowerReadOnly && (
               <button className="tool-btn-mini" onClick={handleAddManualCalcLine}>
                 <Plus size={11} color="var(--brand-blue)" /> Manual Line
               </button>
             )}
-            {lowerTab === 'Rate' && selectedRow?.rowType === 'Item' && !isReadOnly && (
+            {lowerTab === 'Rate' && selectedRow?.rowType === 'Item' && !lowerReadOnly && (
               <button className="tool-btn-mini" onClick={handleAddRateRow}>
                 <Plus size={11} color="#16a34a" /> Add Rate Line
               </button>
@@ -1121,9 +1162,22 @@ export const EstimatePane: React.FC<EstimatePaneProps> = ({
           </div>
         </div>
 
-        <div className="estimate-grid-scroll">
+        <div
+          ref={calcSheetRef}
+          className="estimate-grid-scroll worksheet-grid"
+          tabIndex={0}
+          aria-label={lowerTab === 'Rate' || isPriceList ? 'Rate worksheet' : 'Calculation worksheet'}
+          onFocus={(event) => focusWorksheet(event, lowerTab === 'Calc' && !isPriceList ? onSelectCalcRow : undefined)}
+          onClick={clickWorksheet}
+          onKeyDownCapture={(event) => navigateWorksheet(
+            event,
+            selectedRow?.rowType === 'Item' && !lowerReadOnly
+              ? lowerTab === 'Rate' || isPriceList ? handleAddRateRow : handleAddManualCalcLine
+              : undefined,
+          )}
+        >
           {lowerTab === 'Calc' && !isPriceList ? (
-            <table className="cubit-table">
+            <table className="cubit-table worksheet-detail-table">
               <thead>
                 <tr>
                   <th>Shape / Calc Description</th>
@@ -1148,6 +1202,7 @@ export const EstimatePane: React.FC<EstimatePaneProps> = ({
                   selectedRow?.calcRows.map((c) => (
                     <tr
                       key={c.id}
+                      data-worksheet-row={c.id}
                       className={selectedCalcRowId === c.id ? 'selected' : ''}
                       onClick={() => onSelectCalcRow(c.id)}
                       onContextMenu={(e) => {
@@ -1164,7 +1219,10 @@ export const EstimatePane: React.FC<EstimatePaneProps> = ({
                     >
                       <td>
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                          <span>{c.description}</span>
+                          {c.shapeId ? <span>{c.description}</span> : <WorksheetInput
+                            label="Calculation description" value={c.description} disabled={lowerReadOnly}
+                            onCommit={(description) => handleUpdateCalcLine(c.id, { description })}
+                          />}
                           {c.shapeId && (
                             <button
                               className="pane-icon-btn"
@@ -1186,10 +1244,16 @@ export const EstimatePane: React.FC<EstimatePaneProps> = ({
                       <td className="num mono">{c.width ?? ''}</td>
                       <td className="num mono">{c.height ?? ''}</td>
                       <td className="num mono">{c.depth ?? ''}</td>
-                      <td className="num mono">{c.factor}</td>
+                      <td className="num mono"><WorksheetInput
+                        label="Calculation factor" value={c.factor} disabled={lowerReadOnly}
+                        onCommit={(value) => {
+                          const factor = Number(value);
+                          if (value.trim() && Number.isFinite(factor)) handleUpdateCalcLine(c.id, { factor });
+                        }}
+                      /></td>
                       <td>
                         <select
-                          disabled={isReadOnly}
+                          disabled={lowerReadOnly}
                           className="form-select"
                           style={{ height: 20, fontSize: 10.5, padding: '0 2px' }}
                           value={c.rounding ?? 'None'}
@@ -1207,7 +1271,13 @@ export const EstimatePane: React.FC<EstimatePaneProps> = ({
                         </select>
                       </td>
                       <td className="num mono" style={{ fontWeight: 600 }}>
-                        {formatNumber(c.quantity)}
+                        {c.shapeId ? formatNumber(c.quantity) : <WorksheetInput
+                          label="Manual quantity" value={c.quantity} disabled={lowerReadOnly}
+                          onCommit={(value) => {
+                            const quantity = Number(value);
+                            if (value.trim() && Number.isFinite(quantity)) handleUpdateCalcLine(c.id, { quantity });
+                          }}
+                        />}
                       </td>
                     </tr>
                   ))
@@ -1215,7 +1285,7 @@ export const EstimatePane: React.FC<EstimatePaneProps> = ({
               </tbody>
             </table>
           ) : (
-            <table className="cubit-table">
+            <table className="cubit-table worksheet-detail-table">
               <thead>
                 <tr>
                   <th style={{ width: 70 }}>Code</th>
@@ -1238,12 +1308,14 @@ export const EstimatePane: React.FC<EstimatePaneProps> = ({
                   </tr>
                 ) : (
                   selectedRow?.rateRows.map((rr) => (
-                    <tr key={rr.id}>
-                      <td className="mono">{rr.code}</td>
-                      <td>{rr.description}</td>
+                    <tr key={rr.id} data-worksheet-row={rr.id}>
+                      <td className="mono"><WorksheetInput label="Rate code" value={rr.code} disabled={lowerReadOnly}
+                        onCommit={(code) => handleUpdateRateRow(rr.id, { code })} /></td>
+                      <td><WorksheetInput label="Rate description" value={rr.description} disabled={lowerReadOnly}
+                        onCommit={(description) => handleUpdateRateRow(rr.id, { description })} /></td>
                       <td>
                         <select
-                          disabled={isReadOnly}
+                          disabled={lowerReadOnly}
                           className="form-select"
                           style={{ height: 20, fontSize: 10.5 }}
                           value={rr.kind}
@@ -1260,7 +1332,7 @@ export const EstimatePane: React.FC<EstimatePaneProps> = ({
                       </td>
                       <td>
                         <select
-                          disabled={isReadOnly}
+                          disabled={lowerReadOnly}
                           className="form-select mono"
                           style={{ height: 20, fontSize: 10.5 }}
                           value={rr.fn ?? ''}
@@ -1276,40 +1348,31 @@ export const EstimatePane: React.FC<EstimatePaneProps> = ({
                           <option value="%">%</option>
                         </select>
                       </td>
-                      <td>{rr.unit}</td>
+                      <td><WorksheetInput label="Rate unit" value={rr.unit} disabled={lowerReadOnly}
+                        onCommit={(unit) => handleUpdateRateRow(rr.id, { unit })} /></td>
                       <td className="num mono">
-                        <input
-                          disabled={isReadOnly}
-                          type="number"
-                          className="inline-cell-input mono"
-                          style={{ textAlign: 'right' }}
-                          value={rr.quantity}
-                          onChange={(e) =>
-                            handleUpdateRateRow(rr.id, {
-                              quantity: Number(e.target.value) || 0,
-                            })
-                          }
+                        <WorksheetInput
+                          label="Rate quantity" value={rr.quantity} disabled={lowerReadOnly}
+                          onCommit={(value) => {
+                            const quantity = Number(value);
+                            if (Number.isFinite(quantity)) handleUpdateRateRow(rr.id, { quantity });
+                          }}
                         />
                       </td>
                       <td className="num mono">
-                        <input
-                          disabled={isReadOnly}
-                          type="number"
-                          className="inline-cell-input mono"
-                          style={{ textAlign: 'right' }}
-                          value={rr.rate}
-                          onChange={(e) =>
-                            handleUpdateRateRow(rr.id, {
-                              rate: Number(e.target.value) || 0,
-                            })
-                          }
+                        <WorksheetInput
+                          label="Component rate" value={rr.rate} disabled={lowerReadOnly}
+                          onCommit={(value) => {
+                            const rate = Number(value);
+                            if (Number.isFinite(rate)) handleUpdateRateRow(rr.id, { rate });
+                          }}
                         />
                       </td>
                       <td className="num mono" style={{ fontWeight: 600 }}>
                         {formatCurrency(rr.total)}
                       </td>
                       <td>
-                        {!isReadOnly && (
+                        {!lowerReadOnly && (
                           <button
                             className="pane-icon-btn"
                             title="Delete rate line"

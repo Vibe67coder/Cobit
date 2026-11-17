@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useEffectEvent, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import type { IfcElementGeom, PlanDocument, TakeoffShape } from '../../types/cubit';
@@ -22,6 +22,8 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
   const mountRef = useRef<HTMLDivElement>(null);
   const [hoverInfo, setHoverInfo] = useState<string | null>(null);
   const [xrayMode, setXrayMode] = useState(false);
+  const modelRef = useRef<{ group: THREE.Group; pickables: THREE.Object3D[] } | null>(null);
+  const selectShape = useEffectEvent(onSelectShape);
   const controlsResetRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
@@ -32,8 +34,12 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
     try {
       renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
     } catch (err) {
-      container.innerHTML = `<div style="padding:24px;font-size:12px;color:#475569">3D WebGL Renderer fallback: ${err instanceof Error ? err.message : 'WebGL unavailable'}</div>`;
-      return;
+      const notice = document.createElement('div');
+      notice.className = 'viewport-render-error';
+      notice.setAttribute('role', 'status');
+      notice.textContent = `3D view unavailable. ${err instanceof Error ? err.message : 'WebGL unavailable'}`;
+      container.appendChild(notice);
+      return () => notice.remove();
     }
 
     const width = Math.max(300, container.clientWidth);
@@ -41,7 +47,6 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
     renderer.setSize(width, height);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     renderer.shadowMap.enabled = true;
-    container.innerHTML = '';
     container.appendChild(renderer.domElement);
 
     const scene = new THREE.Scene();
@@ -54,6 +59,8 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
     controls.enableDamping = true;
     controls.dampingFactor = 0.08;
     controls.target.set(0, 1.2, 0);
+    controls.update();
+    controls.saveState();
 
     // Lighting
     scene.add(new THREE.AmbientLight('#ffffff', 0.72));
@@ -70,8 +77,95 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
     scene.add(grid);
 
     const pickables: THREE.Object3D[] = [];
-    const disposables: { dispose: () => void }[] = [];
+    const group = new THREE.Group();
+    scene.add(group);
+    modelRef.current = { group, pickables };
 
+    // Raycaster for hover + click-to-select sync with Estimate pane
+    const raycaster = new THREE.Raycaster();
+    const pointer = new THREE.Vector2();
+    let downPos = { x: 0, y: 0 };
+
+    const onPointerMove = (ev: PointerEvent) => {
+      const rect = renderer.domElement.getBoundingClientRect();
+      pointer.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
+      pointer.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
+      raycaster.setFromCamera(pointer, camera);
+      const hits = raycaster.intersectObjects(pickables, false);
+      if (hits.length > 0 && hits[0].object.userData?.label) {
+        setHoverInfo(hits[0].object.userData.label);
+        renderer.domElement.style.cursor = 'pointer';
+      } else {
+        setHoverInfo(null);
+        renderer.domElement.style.cursor = 'grab';
+      }
+    };
+
+    const onPointerDown = (ev: PointerEvent) => {
+      downPos = { x: ev.clientX, y: ev.clientY };
+    };
+
+    const onPointerUp = (ev: PointerEvent) => {
+      if (Math.hypot(ev.clientX - downPos.x, ev.clientY - downPos.y) > 4) return;
+      const rect = renderer.domElement.getBoundingClientRect();
+      pointer.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
+      pointer.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
+      raycaster.setFromCamera(pointer, camera);
+      const hits = raycaster.intersectObjects(pickables, false);
+      if (hits.length > 0 && hits[0].object.userData?.shapeId) {
+        selectShape(hits[0].object.userData.shapeId);
+      }
+    };
+
+    renderer.domElement.addEventListener('pointermove', onPointerMove);
+    renderer.domElement.addEventListener('pointerdown', onPointerDown);
+    renderer.domElement.addEventListener('pointerup', onPointerUp);
+
+    controlsResetRef.current = () => controls.reset();
+
+    const onResize = () => {
+      if (!container) return;
+      const w = Math.max(300, container.clientWidth);
+      const h = Math.max(240, container.clientHeight);
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
+      renderer.setSize(w, h);
+    };
+    const resizeObs = new ResizeObserver(onResize);
+    resizeObs.observe(container);
+
+    let raf = 0;
+    const animate = () => {
+      raf = requestAnimationFrame(animate);
+      controls.update();
+      renderer.render(scene, camera);
+    };
+    animate();
+
+    return () => {
+      cancelAnimationFrame(raf);
+      resizeObs.disconnect();
+      renderer.domElement.removeEventListener('pointermove', onPointerMove);
+      renderer.domElement.removeEventListener('pointerdown', onPointerDown);
+      renderer.domElement.removeEventListener('pointerup', onPointerUp);
+      controls.dispose();
+      grid.geometry.dispose();
+      grid.material.dispose();
+      dirLight.dispose();
+      renderer.dispose();
+      renderer.domElement.remove();
+      modelRef.current = null;
+      controlsResetRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    controlsResetRef.current?.();
+  }, [activePlan?.id]);
+
+  useEffect(() => {
+    if (!modelRef.current) return;
+    const { group, pickables } = modelRef.current;
     const visibleLayerNames = new Set(
       (activePlan?.layers ?? []).filter((l) => l.visible).map((l) => l.name)
     );
@@ -115,9 +209,8 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
         const edges = new THREE.EdgesGeometry(geom);
         const line = new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color: '#0f172a', transparent: true, opacity: 0.25 }));
         mesh.add(line);
-        scene.add(mesh);
+        group.add(mesh);
         pickables.push(mesh);
-        disposables.push(geom, mat, edges);
       }
     }
 
@@ -154,9 +247,8 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
             shapeId: shp.id,
             label: `${shp.name} (${shp.resultType}) — ${shp.points.length} No.`,
           };
-          scene.add(mesh);
+          group.add(mesh);
           pickables.push(mesh);
-          disposables.push(geom, mat);
         }
         continue;
       }
@@ -188,9 +280,8 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
         };
         const edges = new THREE.EdgesGeometry(geom);
         mesh.add(new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color: isSelected ? '#0f172a' : shp.color })));
-        scene.add(mesh);
+        group.add(mesh);
         pickables.push(mesh);
-        disposables.push(geom, mat, edges);
         continue;
       }
 
@@ -229,88 +320,22 @@ export const ThreeViewport: React.FC<ThreeViewportProps> = ({
         };
         const edges = new THREE.EdgesGeometry(geom);
         mesh.add(new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color: '#0f172a', transparent: true, opacity: 0.35 })));
-        scene.add(mesh);
+        group.add(mesh);
         pickables.push(mesh);
-        disposables.push(geom, mat, edges);
       }
     }
 
-    // Raycaster for hover + click-to-select sync with Estimate pane
-    const raycaster = new THREE.Raycaster();
-    const pointer = new THREE.Vector2();
-    let downPos = { x: 0, y: 0 };
-
-    const onPointerMove = (ev: PointerEvent) => {
-      const rect = renderer.domElement.getBoundingClientRect();
-      pointer.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
-      pointer.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
-      raycaster.setFromCamera(pointer, camera);
-      const hits = raycaster.intersectObjects(pickables, false);
-      if (hits.length > 0 && hits[0].object.userData?.label) {
-        setHoverInfo(hits[0].object.userData.label);
-        renderer.domElement.style.cursor = 'pointer';
-      } else {
-        setHoverInfo(null);
-        renderer.domElement.style.cursor = 'grab';
-      }
-    };
-
-    const onPointerDown = (ev: PointerEvent) => {
-      downPos = { x: ev.clientX, y: ev.clientY };
-    };
-
-    const onPointerUp = (ev: PointerEvent) => {
-      if (Math.hypot(ev.clientX - downPos.x, ev.clientY - downPos.y) > 4) return;
-      const rect = renderer.domElement.getBoundingClientRect();
-      pointer.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
-      pointer.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
-      raycaster.setFromCamera(pointer, camera);
-      const hits = raycaster.intersectObjects(pickables, false);
-      if (hits.length > 0 && hits[0].object.userData?.shapeId) {
-        onSelectShape(hits[0].object.userData.shapeId);
-      }
-    };
-
-    renderer.domElement.addEventListener('pointermove', onPointerMove);
-    renderer.domElement.addEventListener('pointerdown', onPointerDown);
-    renderer.domElement.addEventListener('pointerup', onPointerUp);
-
-    controlsResetRef.current = () => {
-      camera.position.set(16, 15, 20);
-      controls.target.set(0, 1.2, 0);
-      controls.update();
-    };
-
-    const onResize = () => {
-      if (!container) return;
-      const w = Math.max(300, container.clientWidth);
-      const h = Math.max(240, container.clientHeight);
-      camera.aspect = w / h;
-      camera.updateProjectionMatrix();
-      renderer.setSize(w, h);
-    };
-    const resizeObs = new ResizeObserver(onResize);
-    resizeObs.observe(container);
-
-    let raf = 0;
-    const animate = () => {
-      raf = requestAnimationFrame(animate);
-      controls.update();
-      renderer.render(scene, camera);
-    };
-    animate();
-
     return () => {
-      cancelAnimationFrame(raf);
-      resizeObs.disconnect();
-      renderer.domElement.removeEventListener('pointermove', onPointerMove);
-      renderer.domElement.removeEventListener('pointerdown', onPointerDown);
-      renderer.domElement.removeEventListener('pointerup', onPointerUp);
-      controls.dispose();
-      for (const d of disposables) d.dispose();
-      renderer.dispose();
+      group.traverse((object) => {
+        if (object instanceof THREE.Mesh || object instanceof THREE.LineSegments) {
+          object.geometry.dispose();
+          object.material.dispose();
+        }
+      });
+      group.clear();
+      pickables.length = 0;
     };
-  }, [activePlan, shapes, selectedShapeId, isolateSelected, xrayMode, onSelectShape]);
+  }, [activePlan, shapes, selectedShapeId, isolateSelected, xrayMode]);
 
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>

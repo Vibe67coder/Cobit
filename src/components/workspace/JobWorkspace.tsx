@@ -502,12 +502,8 @@ export const JobWorkspace: React.FC<JobWorkspaceProps> = ({
         [fieldKey]: match.syncedValue,
       };
     });
-    const ts = new Date().toISOString().slice(0, 16).replace('T', ' ');
-    const nextRefs = refs.map((rf) =>
-      rf.paused ? rf : { ...rf, lastSynced: ts }
-    );
-    onUpdateJob(job.id, { rows: nextRows, externalRefs: nextRefs });
-    onNotify(`Recalculated ${updatedCount} active live reference(s).`);
+    onUpdateJob(job.id, { rows: nextRows });
+    onNotify(`Applied ${updatedCount} saved reference values.`);
   };
 
   const insertRow = (kind: 'Trade' | 'Heading' | 'Item', atEnd = false) => {
@@ -706,19 +702,21 @@ export const JobWorkspace: React.FC<JobWorkspaceProps> = ({
     setDraftPoints([]);
   };
 
-  const handleInsertPlan = (plan: PlanDocument, startCalibration: boolean) => {
+  const handleInsertPlans = (plans: PlanDocument[], startCalibration: boolean) => {
     if (isJobFrozen) {
       onNotify(freezeLockReason('Plans'));
       return;
     }
-    onUpdateJob(job.id, { plans: [...job.plans, plan] });
-    setActivePlanId(plan.id);
+    if (!plans.length) return;
+    onUpdateJob(job.id, { plans: [...job.plans, ...plans] });
+    setActivePlanId(plans[0].id);
+    setDraftPoints([]);
+    setSelectedShapeId(null);
     setZoom(1);
     setPan({ x: 30, y: 20 });
-    if (startCalibration) {
-      setCalibratingScale(true);
-      onNotify(`Plan "${plan.name}" inserted — click Point A and Point B to calibrate scale.`);
-    }
+    const calibrate = startCalibration && !isQuantitiesFrozen;
+    setCalibratingScale(calibrate);
+    onNotify(`Imported ${plans.length} ${plans.length === 1 ? 'drawing' : 'drawings'}.${calibrate ? ' Click two points to calibrate the first drawing.' : ''}`);
   };
 
   const handleCompleteScaleCalibration = (pixelDistance: number, realMeters: number) => {
@@ -1022,6 +1020,7 @@ export const JobWorkspace: React.FC<JobWorkspaceProps> = ({
   // Cubit Keyboard Shortcuts inside Job Workspace
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || showInsertPlanModal) return;
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
 
@@ -1036,8 +1035,8 @@ export const JobWorkspace: React.FC<JobWorkspaceProps> = ({
       else if (e.key === 'F8') { e.preventDefault(); setOrthoEnabled((v) => !v); }
       else if (e.key === 'F9') {
         e.preventDefault();
-        setLowerTab('Calc');
-        calcSheetRef.current?.focus();
+        setLowerTab(isPriceList ? 'Rate' : 'Calc');
+        requestAnimationFrame(() => calcSheetRef.current?.focus());
       } else if (e.shiftKey && e.key === 'F4') {
         e.preventDefault();
         if (selectedItem && selectedItem.rowType === 'Item') {
@@ -1082,7 +1081,13 @@ export const JobWorkspace: React.FC<JobWorkspaceProps> = ({
       } else if (e.ctrlKey && e.key === 'h') {
         e.preventDefault();
         insertRow('Heading');
-      } else if (e.ctrlKey && e.key === 'i') {
+      } else if (e.ctrlKey && e.key === '<') {
+        e.preventDefault();
+        handleIndent();
+      } else if (e.ctrlKey && e.key === '>') {
+        e.preventDefault();
+        handleUnindent();
+      } else if (e.ctrlKey && e.key.toLowerCase() === 'i') {
         e.preventDefault();
         insertRow('Item', e.shiftKey);
       } else if (e.key === 'i' || e.key === 'I') {
@@ -1657,9 +1662,8 @@ export const JobWorkspace: React.FC<JobWorkspaceProps> = ({
       {showInsertPlanModal && (
         <InsertPlanModal
           promptScalingOnInsert={options.promptScalingOnInsert}
-          onInsertPlan={handleInsertPlan}
+          onInsertPlans={handleInsertPlans}
           onClose={() => setShowInsertPlanModal(false)}
-          onNotify={onNotify}
         />
       )}
 

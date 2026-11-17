@@ -558,7 +558,9 @@ def test_probe_external_mcp_loopback(monkeypatch) -> None:
             length = int(self.headers.get("Content-Length", "0"))
             req = json.loads(self.rfile.read(length).decode("utf-8"))
             method = req.get("method")
-            if method == "initialize":
+            if self.path == "/ordinary-json":
+                res = {"message": "HTTP service is online."}
+            elif method == "initialize":
                 res = {"protocolVersion": "2024-11-05", "capabilities": {"tools": {}}}
             elif method == "tools/list":
                 res = {"tools": [{"name": "t1"}, {"name": "t2"}, {"name": "t3"}]}
@@ -589,6 +591,9 @@ def test_probe_external_mcp_loopback(monkeypatch) -> None:
         assert result["status"] == "Connected"
         assert result["toolsCount"] == 3
         assert result["resourcesCount"] == 1
+        unrelated = asyncio.run(probe_external_mcp("http", f"http://127.0.0.1:{port}/ordinary-json"))
+        assert not unrelated["ok"]
+        assert unrelated["status"] == "Disconnected"
     finally:
         server.shutdown()
         server.server_close()
@@ -671,4 +676,69 @@ def test_pricelist_excel_and_csv_import(tmp_path: Path) -> None:
     pl_csv = r_csv.json()["job"]
     assert pl_csv["kind"] == "PriceList"
     assert pl_csv["rows"][1]["rate"] == 24.5
+
+
+def test_pdf_drawing_previews_and_selected_pages() -> None:
+    import io
+
+    from main import app
+    from reportlab.pdfgen.canvas import Canvas
+
+    content = io.BytesIO()
+    pdf = Canvas(content, pagesize=(400, 270))
+    for ratio in (20, 50, 100):
+        pdf.drawString(30, 210, f"Site drawing, SCALE 1:{ratio}")
+        pdf.showPage()
+    pdf.save()
+    client = TestClient(app)
+    upload = {"file": ("Drawing set.pdf", content.getvalue(), "application/pdf")}
+
+    preview = client.post("/api/plans/pdf-preview", files=upload)
+    assert preview.status_code == 200
+    pages = preview.json()["pages"]
+    assert [page["number"] for page in pages] == [1, 2, 3]
+    assert all(page["thumbnail"].startswith("data:image/png;base64,") for page in pages)
+
+    response = client.post("/api/plans/upload-pages", files=upload, data={"page_numbers": ["1", "3"]})
+    assert response.status_code == 200
+    plans = response.json()["plans"]
+    assert [plan["pageNumber"] for plan in plans] == [1, 3]
+    assert [plan["scaleLabel"] for plan in plans] == ["1:20 (Detected)", "1:100 (Detected)"]
+    assert client.post("/api/plans/upload-pages", files=upload, data={"page_numbers": "4"}).status_code == 400
+    assert client.post("/api/plans/upload", files=upload, data={"page_number": "2"}).json()["pageNumber"] == 2
+
+
+def test_costx_estimate_and_dimension_summary_import() -> None:
+    import io
+
+    from main import app
+    from openpyxl import Workbook
+
+    client = TestClient(app)
+    workbook = Workbook()
+    workbook.active.append(["CostX export"])
+    estimate = workbook.create_sheet("Estimate")
+    estimate.append(["Oakridge"])
+    estimate.append(["Code", "Description", "Quantity", "Unit", "Rate", "Factor", "Trade"])
+    estimate.append(["001", "Wall lining", 25, "m²", 41.5, 1.2, "Partitions"])
+    estimate.append(["010", "Footing", 3, "m³", 325, 1, "Concrete"])
+    estimate.append(["002", "Wall framing", 25, "m²", 80, 1, "Partitions"])
+    estimate.append([None, "Grand total", 53, "", 5000, 1, ""])
+    file = io.BytesIO()
+    workbook.save(file)
+    result = client.post("/api/import/costx-estimate", files={"file": ("Oakridge.xlsx", file.getvalue())})
+    assert result.status_code == 200
+    job = result.json()["job"]
+    assert job["kind"] == "Job"
+    assert job["markupPct"] == job["salesTaxPct"] == 0
+    rows = job["rows"]
+    assert [row["description"] for row in rows] == ["Partitions", "Wall lining", "Wall framing", "Concrete", "Footing"]
+    assert rows[1]["parentId"] == rows[2]["parentId"] == rows[0]["id"]
+    assert (rows[1]["code"], rows[1]["quantity"], rows[1]["rate"], rows[1]["factor"]) == ("001", 25, 41.5, 1.2)
+
+    csv = "Folder,Dimension Group,Quantity,UOM,Measurement Type\nFinishes,Floor tiling,42.5,m²,Area\n"
+    result = client.post("/api/import/costx-estimate", files={"file": ("Dimensions.csv", csv.encode())})
+    assert result.status_code == 200
+    item = result.json()["job"]["rows"][1]
+    assert (item["description"], item["resultType"], item["quantity"], item["rate"]) == ("Floor tiling", "Area", 42.5, 0)
 

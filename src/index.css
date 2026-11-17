@@ -1429,3 +1429,239 @@ button {
 .flag-FollowUp { background: #fce7f3; color: #be185d; border: 1px solid #f9a8d4; }
 .flag-Resolved { background: #dcfce7; color: #15803d; border: 1px solid #86efac; }
 
+
+/* Drawing selection */
+.drawing-import {
+  width: 760px;
+}
+
+.drawing-import .modal-header span,
+.drawing-file-picker,
+.drawing-import-heading,
+.drawing-page span {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.drawing-file-picker {
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+  font-weight: 600;
+}
+
+.drawing-file-picker input {
+  max-width: 100%;
+  font-size: 11px;
+}
+
+.drawing-import-list {
+  display: grid;
+  gap: 12px;
+  max-height: 54vh;
+  overflow: auto;
+}
+
+.drawing-import-file {
+  min-width: 0;
+  border: 1px solid var(--border-main);
+}
+
+.drawing-import-heading {
+  padding: 6px 8px;
+  flex-wrap: wrap;
+  background: var(--bg-toolbar);
+}
+
+.drawing-import-heading strong {
+  flex: 1 1 12rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.drawing-import-heading button,
+.drawing-import-footer button {
+  white-space: nowrap;
+}
+
+.drawing-page-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(122px, 1fr));
+  gap: 8px;
+  padding: 8px;
+}
+
+.drawing-page {
+  display: grid;
+  grid-template-rows: 92px auto;
+  min-width: 0;
+  padding: 5px;
+  gap: 4px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-main);
+  cursor: pointer;
+}
+
+.drawing-page.selected {
+  background: var(--bg-row-selected);
+  border-color: var(--border-focus);
+}
+
+.drawing-page img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #fff;
+}
+
+.drawing-import-error {
+  margin: 8px;
+  color: var(--accent-red);
+  overflow-wrap: anywhere;
+}
+
+.drawing-import-footer {
+  flex-wrap: wrap;
+}
+
+.drawing-import-footer label {
+  margin-right: auto;
+}
+
+.drawing-import-footer [role='status'] {
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+/* Keep popovers outside the ribbon's scrolling contents. */
+.context-menu.ribbon-menu {
+  inset: auto;
+  margin: 0;
+  width: 160px;
+  min-width: 0;
+  color: var(--text-primary);
+}
+
+.mcp-connection-note {
+  margin: 0 0 8px;
+  color: var(--text-secondary);
+}
+
+.mcp-external-servers {
+  min-width: 0;
+}
+
+.mcp-connections-table {
+  overflow-x: auto;
+  margin-bottom: 8px;
+}
+
+.mcp-connections-table table {
+  table-layout: auto;
+  min-width: 580px;
+}
+
+.mcp-connections-table td:nth-child(2),
+.mcp-connections-table td:nth-child(5) {
+  max-width: 150px;
+}
+
+.mcp-connection-actions,
+.mcp-add-connection {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.mcp-add-connection {
+  flex-wrap: wrap;
+}
+
+.mcp-add-connection .form-input {
+  flex: 1 1 140px;
+  min-width: 0;
+}
+
+.mcp-add-connection .form-select {
+  width: auto;
+}
+
+.mcp-add-connection button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.worksheet-toolbar {
+  height: auto;
+  min-height: 26px;
+  flex-wrap: wrap;
+  gap: 2px 6px;
+  padding-block: 2px;
+}
+
+.worksheet-toolbar .pane-tab,
+.worksheet-toolbar .tool-btn-mini {
+  white-space: nowrap;
+}
+
+.worksheet-toolbar .pane-tabs-left,
+.worksheet-toolbar-actions {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.worksheet-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.worksheet-toolbar-actions button {
+  flex-shrink: 0;
+}
+
+.worksheet-summary {
+  color: var(--text-muted);
+  font-size: 10.5px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.worksheet-detail-table {
+  min-width: 680px;
+}
+
+.worksheet-grid {
+  scroll-padding-top: 24px;
+}
+
+.worksheet-grid tbody td:focus {
+  outline: 2px solid var(--border-focus);
+  outline-offset: -2px;
+}
+
+.worksheet-grid .num input {
+  text-align: right;
+}
+
+.viewport-floating-toolbar {
+  max-width: calc(100% - 16px);
+  overflow-x: auto;
+}
+
+.viewport-floating-toolbar .vp-tool-btn {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.viewport-render-error {
+  position: absolute;
+  top: 80px;
+  left: 12px;
+  right: 12px;
+  overflow-wrap: anywhere;
+}
+

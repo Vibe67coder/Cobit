@@ -26,10 +26,10 @@ from services.ai_takeoff import (
     ai_count_symbols,
     ai_scan_text_labels,
 )
-from services.cbx_compat import export_cbx_archive, import_legacy_archive, import_pricelist_spreadsheet
+from services.cbx_compat import export_cbx_archive, import_costx_estimate, import_legacy_archive, import_pricelist_spreadsheet
 from services.export_engine import export_job_csv, export_job_excel, export_job_pdf
 from services.ifc_processor import generate_sample_office_ifc, process_ifc_bytes
-from services.plan_processor import auto_select_room_polygon, process_uploaded_plan
+from services.plan_processor import auto_select_room_polygon, preview_pdf_pages, process_pdf_pages, process_uploaded_plan
 
 storage = CobitXStorage()
 app = FastAPI(title="CobitX Estimating Engine", version="15.1.0")
@@ -237,6 +237,25 @@ async def upload_plan(
         raise HTTPException(status_code=400, detail=f"Failed to parse plan: {exc}") from exc
 
 
+@app.post("/api/plans/pdf-preview")
+async def get_pdf_preview(file: UploadFile = File(...)) -> dict[str, Any]:
+    try:
+        return {"pages": preview_pdf_pages(await file.read())}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Failed to open PDF: {exc}") from exc
+
+
+@app.post("/api/plans/upload-pages")
+async def upload_pdf_pages(
+    file: UploadFile = File(...),
+    page_numbers: list[int] = Form(...),
+) -> dict[str, Any]:
+    try:
+        return {"plans": process_pdf_pages(file.filename or "plan.pdf", await file.read(), page_numbers)}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Failed to import PDF pages: {exc}") from exc
+
+
 @app.post("/api/plans/auto-select")
 def auto_select_polygon(body: AutoSelectRequest) -> dict[str, Any]:
     pts = auto_select_room_polygon(body.imageDataUrl, body.seedX, body.seedY)
@@ -368,6 +387,15 @@ async def post_import_pricelist_excel(file: UploadFile = File(...)) -> dict[str,
         return {"ok": True, "job": job}
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Failed to import price list spreadsheet: {exc}") from exc
+
+
+@app.post("/api/import/costx-estimate")
+async def post_import_costx_estimate(file: UploadFile = File(...)) -> dict[str, Any]:
+    try:
+        job = import_costx_estimate(file.filename or "estimate.xlsx", await file.read())
+        return {"ok": True, "job": job}
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Failed to import CostX export: {exc}") from exc
 
 
 @app.post("/api/export/cbx")

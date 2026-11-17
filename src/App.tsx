@@ -547,7 +547,7 @@ export function App() {
             }}
             title="SQLite + DuckDB + MCP Engine status"
           >
-            {engineConnected ? 'SQLite/DuckDB + MCP Live' : 'Local Memory Mode'}
+            {engineConnected ? 'Local engine online' : 'Local Memory Mode'}
           </span>
         </div>
 

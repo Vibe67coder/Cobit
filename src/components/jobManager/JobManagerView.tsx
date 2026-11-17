@@ -36,7 +36,7 @@ import { ColumnChooserModal, type ColumnDef } from '../modals/ColumnChooserModal
 import {
   exportLegacyArchive,
   importLegacyArchive,
-  importPriceListSpreadsheet,
+  importEstimateSpreadsheet,
 } from '../../services/engineClient';
 
 const JM_ALL_COLUMNS: ColumnDef[] = [
@@ -159,7 +159,7 @@ export const JobManagerView: React.FC<JobManagerViewProps> = ({
   const [newJobName, setNewJobName] = useState('');
   const [newJobTemplateId, setNewJobTemplateId] = useState('');
   const [removeQuantities, setRemoveQuantities] = useState(true);
-  const [newJobDropdownOpen, setNewJobDropdownOpen] = useState(false);
+  const newJobMenuRef = useRef<HTMLDivElement>(null);
 
   const [promptModal, setPromptModal] = useState<null | {
     title: string;
@@ -182,6 +182,9 @@ export const JobManagerView: React.FC<JobManagerViewProps> = ({
   const [mergeIncludePlans, setMergeIncludePlans] = useState(true);
   const [freezeDropdownOpen, setFreezeDropdownOpen] = useState(false);
   const archiveInputRef = useRef<HTMLInputElement>(null);
+  const costxInputRef = useRef<HTMLInputElement>(null);
+  const costxKindRef = useRef<'Job' | 'PriceList'>('Job');
+  const [importingCostx, setImportingCostx] = useState(false);
   const archiveHintRef = useRef<'Job' | 'PriceList' | undefined>(undefined);
 
   const handleArchiveFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -192,11 +195,34 @@ export const JobManagerView: React.FC<JobManagerViewProps> = ({
       const lower = file.name.toLowerCase();
       const imported =
         lower.endsWith('.xlsx') || lower.endsWith('.csv')
-          ? await importPriceListSpreadsheet(file)
+          ? await importEstimateSpreadsheet(file, 'PriceList')
           : await importLegacyArchive(file, archiveHintRef.current);
       onImportJobArchive(imported);
     } catch (err) {
       onNotify(`Import failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
+  const handleCostxFilesSelected = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.currentTarget.files ?? []);
+    event.currentTarget.value = '';
+    if (!files.length) return;
+    const kind = costxKindRef.current;
+    setImportingCostx(true);
+    const failures: string[] = [];
+    let imported = 0;
+    try {
+      for (const file of files) {
+        try {
+          onImportJobArchive(await importEstimateSpreadsheet(file, kind));
+          imported++;
+        } catch (error) {
+          failures.push(`${file.name} (${error instanceof Error ? error.message : String(error)})`);
+        }
+      }
+      onNotify(`Imported ${imported} of ${files.length} CostX files.${failures.length ? ` Failed: ${failures.join('; ')}` : ''}`);
+    } finally {
+      setImportingCostx(false);
     }
   };
 
@@ -437,38 +463,44 @@ export const JobManagerView: React.FC<JobManagerViewProps> = ({
                 <div style={{ position: 'relative' }}>
                   <button
                     className="ribbon-btn-lg"
-                    onClick={() => setNewJobDropdownOpen((v) => !v)}
+                    popoverTarget="new-job-menu"
+                    onClick={(event) => {
+                      const rect = event.currentTarget.getBoundingClientRect();
+                      const menu = newJobMenuRef.current;
+                      if (menu) {
+                        menu.style.left = `${Math.max(4, Math.min(rect.left, window.innerWidth - 164))}px`;
+                        menu.style.top = `${rect.bottom + 3}px`;
+                      }
+                    }}
                   >
                     {showKeytips && <span className="keytip-badge">NJ</span>}
                     <FilePlus2 size={18} color="#16a34a" />
                     <span>New Job ▾</span>
                   </button>
-                  {newJobDropdownOpen && (
-                    <div className="context-menu" style={{ position: 'absolute', top: 54, left: 0 }}>
-                      <button
-                        className="context-menu-item"
-                        onClick={() => {
-                          setNewJobDropdownOpen(false);
-                          setNewJobName('');
-                          setNewJobTemplateId('');
-                          setNewJobModal('Job');
-                        }}
-                      >
-                        <span>New Job...</span>
-                      </button>
-                      <button
-                        className="context-menu-item"
-                        onClick={() => {
-                          setNewJobDropdownOpen(false);
-                          setNewJobName('');
-                          setNewJobTemplateId('');
-                          setNewJobModal('PriceList');
-                        }}
-                      >
-                        <span>New Price List...</span>
-                      </button>
-                    </div>
-                  )}
+                  <div id="new-job-menu" ref={newJobMenuRef} popover="auto" className="context-menu ribbon-menu">
+                    <button
+                      className="context-menu-item"
+                      onClick={() => {
+                        newJobMenuRef.current?.hidePopover();
+                        setNewJobName('');
+                        setNewJobTemplateId('');
+                        setNewJobModal('Job');
+                      }}
+                    >
+                      <span>New Job...</span>
+                    </button>
+                    <button
+                      className="context-menu-item"
+                      onClick={() => {
+                        newJobMenuRef.current?.hidePopover();
+                        setNewJobName('');
+                        setNewJobTemplateId('');
+                        setNewJobModal('PriceList');
+                      }}
+                    >
+                      <span>New Price List...</span>
+                    </button>
+                  </div>
                 </div>
 
                 <button
@@ -563,6 +595,14 @@ export const JobManagerView: React.FC<JobManagerViewProps> = ({
                   style={{ display: 'none' }}
                   onChange={handleArchiveFileSelected}
                 />
+                <input
+                  ref={costxInputRef}
+                  type="file"
+                  hidden
+                  multiple
+                  accept=".xlsx,.csv"
+                  onChange={handleCostxFilesSelected}
+                />
                 <button
                   className="ribbon-btn-lg"
                   onClick={() => {
@@ -572,6 +612,18 @@ export const JobManagerView: React.FC<JobManagerViewProps> = ({
                 >
                   <Upload size={18} color="var(--brand-blue)" />
                   <span>Import</span>
+                </button>
+                <button
+                  className="ribbon-btn-lg"
+                  disabled={importingCostx}
+                  title={activeTab === 'Jobs' ? 'Import CostX estimates or dimension summaries (Excel or CSV)' : 'Import CostX rate libraries (Excel or CSV)'}
+                  onClick={() => {
+                    costxKindRef.current = activeTab === 'Jobs' ? 'Job' : 'PriceList';
+                    costxInputRef.current?.click();
+                  }}
+                >
+                  <FileSpreadsheet size={18} color="#0d9488" />
+                  <span>{importingCostx ? 'Importing…' : 'Import CostX'}</span>
                 </button>
                 <button
                   className="ribbon-btn-lg"

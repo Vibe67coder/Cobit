@@ -719,10 +719,10 @@ export const SidePanes: React.FC<SidePanesProps> = ({
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <span style={{ fontSize: 10.5, color: 'var(--text-muted)' }}>
-                    Live Price List / Job / MCP Links
+                    Saved reference values
                   </span>
                   <button className="tool-btn-mini" onClick={onRecalculateRefs}>
-                    <RefreshCw size={11} color="var(--brand-blue)" /> Recalculate
+                    <RefreshCw size={11} color="var(--brand-blue)" /> Apply values
                   </button>
                 </div>
                 {externalRefs.length === 0 ? (
@@ -744,7 +744,7 @@ export const SidePanes: React.FC<SidePanesProps> = ({
                         <span style={{ fontWeight: 600, fontSize: 11 }}>{ref.sourceName}</span>
                         <button
                           className="pane-icon-btn"
-                          title={ref.paused ? 'Resume Sync' : 'Pause Sync'}
+                          title={ref.paused ? 'Include reference' : 'Pause reference'}
                           onClick={() => onTogglePauseRef(ref.id)}
                         >
                           {ref.paused ? <Play size={11} color="#16a34a" /> : <Pause size={11} color="#d97706" />}
